@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Биржа - Вход и Регистрация</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            width: 100%;
+            margin-bottom: 10px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            display: none;
+        }
+        .success {
+            background-color: #dff0d8;
+            border: 1px solid #d6e9c6;
+            color: #3c763d;
+        }
+        .error {
+            background-color: #f2dede;
+            border: 1px solid #ebccd1;
+            color: #a94442;
+        }
+        .form-container {
+            display: none;
+        }
+        .form-container.active {
+            display: block;
+        }
+        .switch-form {
+            text-align: center;
+            margin-top: 15px;
+        }
+        .switch-form a {
+            color: #4CAF50;
+            text-decoration: none;
+            cursor: pointer;
+        }
+        .switch-form a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Биржа</h1>
+        
+        <!-- Форма входа -->
+        <div id="loginForm" class="form-container active">
+            <h2>Вход</h2>
+            <form id="loginFormElement">
+                <div class="form-group">
+                    <label for="loginName">Имя пользователя:</label>
+                    <input type="text" id="loginName" name="name" required>
+                </div>
+                <div class="form-group">
+                    <label for="loginPassword">Пароль:</label>
+                    <input type="password" id="loginPassword" name="password" required>
+                </div>
+                <button type="submit">Войти</button>
+            </form>
+            <div class="switch-form">
+                Нет аккаунта? <a onclick="switchForm('register')">Зарегистрироваться</a>
+            </div>
+        </div>
+
+        <!-- Форма регистрации -->
+        <div id="registerForm" class="form-container">
+            <h2>Регистрация</h2>
+            <form id="registerFormElement">
+                <div class="form-group">
+                    <label for="registerName">Имя пользователя:</label>
+                    <input type="text" id="registerName" name="name" required minlength="3">
+                </div>
+                <div class="form-group">
+                    <label for="registerPassword">Пароль:</label>
+                    <input type="password" id="registerPassword" name="password" required minlength="6">
+                </div>
+                <button type="submit">Зарегистрироваться</button>
+            </form>
+            <div class="switch-form">
+                Уже есть аккаунт? <a onclick="switchForm('login')">Войти</a>
+            </div>
+        </div>
+
+        <div id="result" class="result"></div>
+    </div>
+
+    <script>
+        function switchForm(form) {
+            document.querySelectorAll('.form-container').forEach(container => {
+                container.classList.remove('active');
+            });
+            document.getElementById(form + 'Form').classList.add('active');
+        }
+
+        function showResult(message, isError = false) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.className = `result ${isError ? 'error' : 'success'}`;
+            resultDiv.style.display = 'block';
+            resultDiv.innerHTML = message;
+        }
+
+        // Обработка входа
+        document.getElementById('loginFormElement').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const name = document.getElementById('loginName').value;
+            const password = document.getElementById('loginPassword').value;
+            
+            try {
+                const response = await fetch('/api/v1/public/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ name, password }),
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    localStorage.setItem('apiKey', data.api_key);
+                    showResult(`
+                        <h3>Вход выполнен успешно!</h3>
+                        <p>Ваш API ключ: ${data.api_key}</p>
+                        <p>Теперь вы можете начать торговлю.</p>
+                    `);
+                } else {
+                    throw new Error(data.detail || 'Ошибка при входе');
+                }
+            } catch (error) {
+                showResult(error.message, true);
+            }
+        });
+
+        // Обработка регистрации
+        document.getElementById('registerFormElement').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const name = document.getElementById('registerName').value;
+            const password = document.getElementById('registerPassword').value;
+            
+            try {
+                const response = await fetch('/api/v1/public/register', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ name, password }),
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    localStorage.setItem('apiKey', data.api_key);
+                    showResult(`
+                        <h3>Регистрация успешна!</h3>
+                        <p>Ваш API ключ: ${data.api_key}</p>
+                        <p>Сохраните его, он понадобится для торговли.</p>
+                    `);
+                } else {
+                    throw new Error(data.detail || 'Ошибка при регистрации');
+                }
+            } catch (error) {
+                showResult(error.message, true);
+            }
+        });
+    </script>
+</body>
+</html> 
