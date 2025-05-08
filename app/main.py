@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from .models import NewUser, User, LoginUser
+from .models import NewUser, User, LoginUser, Balance
 from .database import db
 from .auth import get_current_user
 import os
@@ -52,3 +52,8 @@ async def login(login_data: LoginUser):
 @app.get("/api/v1/me")
 async def get_me(current_user: User = Depends(get_current_user)):
     return current_user
+
+@app.get("/api/v1/balance")
+async def get_balances(current_user: User = Depends(get_current_user)):
+    balance = db.get_balance(current_user.id)
+    return balance.balances

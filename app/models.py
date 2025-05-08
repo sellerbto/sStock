@@ -1,5 +1,5 @@
 from pydantic import BaseModel, UUID4, EmailStr
-from typing import Optional
+from typing import Optional, Dict
 from enum import Enum
 import uuid
 import bcrypt
@@ -36,4 +36,8 @@ class User(BaseModel):
         )
 
     def check_password(self, password: str) -> bool:
-        return bcrypt.checkpw(password.encode('utf-8'), self.password_hash.encode('utf-8')) 
+        return bcrypt.checkpw(password.encode('utf-8'), self.password_hash.encode('utf-8'))
+
+class Balance(BaseModel):
+    user_id: uuid.UUID
+    balances: Dict[str, int] = {}  # ticker -> amount mapping 
