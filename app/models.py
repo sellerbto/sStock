@@ -1,5 +1,5 @@
 from pydantic import BaseModel, UUID4, EmailStr
-from typing import Optional, Dict
+from typing import Optional, Dict, Union
 from enum import Enum
 import uuid
 import bcrypt
@@ -41,3 +41,43 @@ class User(BaseModel):
 class Balance(BaseModel):
     user_id: uuid.UUID
     balances: Dict[str, int] = {}  # ticker -> amount mapping 
+
+class Direction(str, Enum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+class OrderStatus(str, Enum):
+    NEW = "NEW"
+    EXECUTED = "EXECUTED"
+    PARTIALLY_EXECUTED = "PARTIALLY_EXECUTED"
+    CANCELLED = "CANCELLED"
+
+class MarketOrderBody(BaseModel):
+    direction: Direction
+    ticker: str
+    qty: int
+
+class LimitOrderBody(BaseModel):
+    direction: Direction
+    ticker: str
+    qty: int
+    price: int
+
+class MarketOrder(BaseModel):
+    id: uuid.UUID
+    status: OrderStatus
+    user_id: uuid.UUID
+    timestamp: str
+    body: MarketOrderBody
+
+class LimitOrder(BaseModel):
+    id: uuid.UUID
+    status: OrderStatus
+    user_id: uuid.UUID
+    timestamp: str
+    body: LimitOrderBody
+    filled: int = 0
+
+class CreateOrderResponse(BaseModel):
+    success: bool = True
+    order_id: uuid.UUID 
