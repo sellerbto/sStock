@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   app:
@@ -12,10 +12,10 @@ services:
     depends_on:
       - db
     volumes:
-      - .:/app
-      - /app/__pycache__
-      - /app/.pytest_cache
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app
+      - .:/api
+      - /api/__pycache__
+      - /api/.pytest_cache
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /api
 
   db:
     image: postgres:15

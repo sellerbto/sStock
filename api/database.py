@@ -1,7 +1,10 @@
 from typing import Dict, Optional, List, Union, Tuple
-from .models import User, Balance, MarketOrder, LimitOrder, OrderStatus, Direction
-from uuid import UUID
-from datetime import datetime
+from .models import (
+    User, Balance, MarketOrder, LimitOrder, OrderStatus, Direction,
+    ExecutionDetails, OrderExecutionSummary
+)
+from uuid import UUID, uuid4
+from datetime import datetime, UTC
 
 class Database:
     def __init__(self):
@@ -10,6 +13,7 @@ class Database:
         self.balances: Dict[UUID, Balance] = {}  # user_id -> Balance
         self.market_orders: Dict[UUID, MarketOrder] = {}  # order_id -> MarketOrder
         self.limit_orders: Dict[UUID, LimitOrder] = {}  # order_id -> LimitOrder
+        self.executions: Dict[UUID, List[ExecutionDetails]] = {}  # order_id -> List[ExecutionDetails]
 
     def add_user(self, user: User) -> None:
         self.users[user.api_key] = user
@@ -119,19 +123,70 @@ class Database:
         else:
             buyer, seller = order2, order1
             
+        # Создаем детали исполнения
+        execution = ExecutionDetails(
+            execution_id=uuid4(),
+            timestamp=datetime.now(UTC),
+            quantity=qty,
+            price=price,
+            counterparty_order_id=order2.id
+        )
+        
+        # Добавляем детали исполнения для обеих заявок
+        self._add_execution(order1.id, execution)
+        self._add_execution(order2.id, execution)
+        
         # Обновляем балансы
         self._update_balances(
             buyer.user_id, seller.user_id,
             buyer.body.ticker, qty, price
         )
         
-        # Обновляем статус лимитной заявки
-        if isinstance(order2, LimitOrder):
-            order2.filled += qty
-            if order2.filled == order2.body.qty:
-                order2.status = OrderStatus.EXECUTED
-            else:
-                order2.status = OrderStatus.PARTIALLY_EXECUTED
+        # Обновляем статус и сводку исполнения для обеих заявок
+        self._update_order_status_and_summary(order1)
+        self._update_order_status_and_summary(order2)
+
+    def _add_execution(self, order_id: UUID, execution: ExecutionDetails) -> None:
+        """Добавить детали исполнения к заявке"""
+        if order_id not in self.executions:
+            self.executions[order_id] = []
+        self.executions[order_id].append(execution)
+
+    def _update_order_status_and_summary(self, order: Union[MarketOrder, LimitOrder]) -> None:
+        """Обновить статус заявки и сводку исполнения"""
+        executions = self.executions.get(order.id, [])
+        if not executions:
+            return
+
+        total_filled = sum(execution.quantity for execution in executions)
+        total_value = sum(execution.quantity * execution.price for execution in executions)
+        average_price = total_value / total_filled if total_filled > 0 else 0
+        last_execution_time = max(execution.timestamp for execution in executions)
+
+        # Создаем или обновляем сводку исполнения
+        order.execution_summary = OrderExecutionSummary(
+            total_filled=total_filled,
+            average_price=average_price,
+            last_execution_time=last_execution_time,
+            executions=executions
+        )
+
+        # Обновляем статус заявки
+        if total_filled == order.body.qty:
+            order.status = OrderStatus.EXECUTED
+        elif total_filled > 0:
+            order.status = OrderStatus.PARTIALLY_EXECUTED
+
+    def get_order_executions(self, order_id: UUID) -> List[ExecutionDetails]:
+        """Получить все исполнения для заявки"""
+        return self.executions.get(order_id, [])
+
+    def get_order_execution_summary(self, order_id: UUID) -> Optional[OrderExecutionSummary]:
+        """Получить сводку исполнения для заявки"""
+        order = self.get_order(order_id)
+        if order and order.execution_summary:
+            return order.execution_summary
+        return None
 
     def _update_balances(self, buyer_id: UUID, seller_id: UUID, ticker: str, qty: int, price: int) -> None:
         """Обновить балансы после исполнения заявки"""

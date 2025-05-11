@@ -1,8 +1,9 @@
 from pydantic import BaseModel, UUID4, EmailStr
-from typing import Optional, Dict, Union
+from typing import Optional, Dict, Union, List
 from enum import Enum
 import uuid
 import bcrypt
+from datetime import datetime
 
 class UserRole(str, Enum):
     USER = "USER"
@@ -51,6 +52,22 @@ class OrderStatus(str, Enum):
     EXECUTED = "EXECUTED"
     PARTIALLY_EXECUTED = "PARTIALLY_EXECUTED"
     CANCELLED = "CANCELLED"
+    REJECTED = "REJECTED"
+
+class ExecutionDetails(BaseModel):
+    """Детали исполнения заявки"""
+    execution_id: uuid.UUID
+    timestamp: datetime
+    quantity: int
+    price: int
+    counterparty_order_id: uuid.UUID  # ID встречной заявки
+
+class OrderExecutionSummary(BaseModel):
+    """Сводка по исполнению заявки"""
+    total_filled: int  # Общее количество исполненных единиц
+    average_price: float  # Средняя цена исполнения
+    last_execution_time: Optional[datetime]  # Время последнего исполнения
+    executions: List[ExecutionDetails] = []  # Список всех исполнений
 
 class MarketOrderBody(BaseModel):
     direction: Direction
@@ -63,21 +80,24 @@ class LimitOrderBody(BaseModel):
     qty: int
     price: int
 
-class MarketOrder(BaseModel):
+class BaseOrder(BaseModel):
+    """Базовая модель для всех типов заявок"""
     id: uuid.UUID
     status: OrderStatus
     user_id: uuid.UUID
-    timestamp: str
+    timestamp: datetime
+    execution_summary: Optional[OrderExecutionSummary] = None
+    rejection_reason: Optional[str] = None
+
+class MarketOrder(BaseOrder):
     body: MarketOrderBody
 
-class LimitOrder(BaseModel):
-    id: uuid.UUID
-    status: OrderStatus
-    user_id: uuid.UUID
-    timestamp: str
+class LimitOrder(BaseOrder):
     body: LimitOrderBody
-    filled: int = 0
+    filled: int = 0  # Количество исполненных единиц
 
 class CreateOrderResponse(BaseModel):
     success: bool = True
-    order_id: uuid.UUID 
+    order_id: uuid.UUID
+    status: OrderStatus
+    rejection_reason: Optional[str] = None 

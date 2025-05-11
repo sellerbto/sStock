@@ -1,18 +1,19 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from .models import (
     NewUser, User, LoginUser, Balance,
     MarketOrder, LimitOrder, MarketOrderBody, LimitOrderBody,
-    CreateOrderResponse, OrderStatus, Direction
+    CreateOrderResponse, OrderStatus, Direction,
+    ExecutionDetails, OrderExecutionSummary
 )
 from .database import db
 from .auth import get_current_user
 import os
 import uuid
-from datetime import datetime
-from typing import Union
+from datetime import datetime, UTC
+from typing import Union, List, Optional
 
 app = FastAPI(
     title="Stock Exchange",
@@ -30,12 +31,12 @@ app.add_middleware(
 )
 
 # Mount static files
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
+app.mount("/static", StaticFiles(directory="api/static"), name="static")
 
 @app.get("/")
 async def root():
     try:
-        return FileResponse("app/static/index.html", media_type="text/html")
+        return FileResponse("api/static/index.html", media_type="text/html")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -44,7 +45,7 @@ async def register(new_user: NewUser):
     # Проверяем, не существует ли уже пользователь с таким именем
     if db.get_user_by_name(new_user.name):
         raise HTTPException(status_code=400, detail="Пользователь с таким именем уже существует")
-    
+
     user = User.create(name=new_user.name, password=new_user.password)
     db.add_user(user)
     return user
@@ -71,45 +72,53 @@ async def create_order(
     current_user: User = Depends(get_current_user)
 ):
     """Создание новой заявки (рыночной или лимитной)"""
-    
+
     # Проверяем баланс пользователя
     balance = db.get_balance(current_user.id)
-    
+
     if order_data.direction == Direction.SELL:
         # Проверяем достаточно ли токенов для продажи
         available_amount = balance.balances.get(order_data.ticker, 0)
         if available_amount < order_data.qty:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Недостаточно токенов {order_data.ticker} для продажи"
+            return CreateOrderResponse(
+                order_id=uuid.uuid4(),
+                success=False,
+                status=OrderStatus.REJECTED,
+                rejection_reason=f"Недостаточно токенов {order_data.ticker} для продажи"
             )
     else:  # Direction.BUY
         # Для рыночной заявки на покупку проверяем наличие денег по лучшей цене
         if isinstance(order_data, MarketOrderBody):
             best_price = db.get_best_price(order_data.ticker, Direction.BUY)
             if best_price is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Нет доступных предложений для покупки"
+                return CreateOrderResponse(
+                    order_id=uuid.uuid4(),
+                    success=False,
+                    status=OrderStatus.REJECTED,
+                    rejection_reason="Нет доступных предложений для покупки"
                 )
             required_usd = best_price * order_data.qty
             available_usd = balance.balances.get("USD", 0)
             if available_usd < required_usd:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Недостаточно USD для покупки. Требуется: {required_usd}, доступно: {available_usd}"
+                return CreateOrderResponse(
+                    order_id=uuid.uuid4(),
+                    success=False,
+                    status=OrderStatus.REJECTED,
+                    rejection_reason=f"Недостаточно USD для покупки. Требуется: {required_usd}, доступно: {available_usd}"
                 )
         else:  # LimitOrderBody
             required_usd = order_data.price * order_data.qty
             available_usd = balance.balances.get("USD", 0)
             if available_usd < required_usd:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Недостаточно USD для покупки. Требуется: {required_usd}, доступно: {available_usd}"
+                return CreateOrderResponse(
+                    order_id=uuid.uuid4(),
+                    success=False,
+                    status=OrderStatus.REJECTED,
+                    rejection_reason=f"Недостаточно USD для покупки. Требуется: {required_usd}, доступно: {available_usd}"
                 )
-    
+
     order_id = uuid.uuid4()
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.now(UTC)
 
     if isinstance(order_data, MarketOrderBody):
         order = MarketOrder(
@@ -128,17 +137,34 @@ async def create_order(
             status=OrderStatus.NEW,
             user_id=current_user.id,
             timestamp=timestamp,
-            body=order_data,
-            filled=0
+            body=order_data
         )
         db.add_limit_order(order)
 
-    return CreateOrderResponse(order_id=order_id)
+    return CreateOrderResponse(
+        order_id=order_id,
+        success=True,
+        status=order.status
+    )
 
 @app.get("/api/v1/order")
-async def list_orders(current_user: User = Depends(get_current_user)):
-    """Получение списка заявок пользователя"""
-    return db.get_user_orders(current_user.id)
+async def list_orders(
+    current_user: User = Depends(get_current_user),
+    status: Optional[OrderStatus] = None,
+    ticker: Optional[str] = None,
+    limit: int = Query(default=100, le=1000)
+):
+    """Получение списка заявок пользователя с возможностью фильтрации"""
+    orders = db.get_user_orders(current_user.id)
+    
+    # Применяем фильтры
+    if status:
+        orders = [order for order in orders if order.status == status]
+    if ticker:
+        orders = [order for order in orders if order.body.ticker == ticker]
+    
+    # Ограничиваем количество результатов
+    return orders[:limit]
 
 @app.get("/api/v1/order/{order_id}")
 async def get_order(
@@ -152,3 +178,29 @@ async def get_order(
     if order.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
     return order
+
+@app.get("/api/v1/order/{order_id}/executions")
+async def get_order_executions(
+    order_id: uuid.UUID,
+    current_user: User = Depends(get_current_user)
+) -> List[ExecutionDetails]:
+    """Получение истории исполнений заявки"""
+    order = db.get_order(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    if order.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
+    return db.get_order_executions(order_id)
+
+@app.get("/api/v1/order/{order_id}/summary")
+async def get_order_summary(
+    order_id: uuid.UUID,
+    current_user: User = Depends(get_current_user)
+) -> Optional[OrderExecutionSummary]:
+    """Получение сводки по исполнению заявки"""
+    order = db.get_order(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    if order.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
+    return db.get_order_execution_summary(order_id)
