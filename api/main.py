@@ -6,10 +6,11 @@ from .models import (
     NewUser, User, LoginUser, Balance,
     MarketOrder, LimitOrder, MarketOrderBody, LimitOrderBody,
     CreateOrderResponse, OrderStatus, Direction,
-    ExecutionDetails, OrderExecutionSummary
+    ExecutionDetails, OrderExecutionSummary,
+    Instrument, Ok, DepositRequest, WithdrawRequest
 )
 from .database import db
-from .auth import get_current_user
+from .auth import get_current_user, get_admin_user
 import os
 import uuid
 from datetime import datetime, UTC
@@ -204,3 +205,90 @@ async def get_order_summary(
     if order.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
     return db.get_order_execution_summary(order_id)
+
+# Административные эндпоинты
+
+@app.delete("/api/v1/admin/user/{user_id}", response_model=User)
+async def delete_user(
+    user_id: uuid.UUID,
+    current_user: User = Depends(get_admin_user)
+):
+    """Удаление пользователя"""
+    user = db.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Проверяем, что пользователь не пытается удалить сам себя
+    if user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot delete yourself")
+    
+    db.delete_user(user_id)
+    return user
+
+@app.post("/api/v1/admin/instrument", response_model=Ok)
+async def add_instrument(
+    instrument: Instrument,
+    current_user: User = Depends(get_admin_user)
+):
+    """Добавление нового торгового инструмента"""
+    if db.get_instrument(instrument.ticker):
+        raise HTTPException(status_code=400, detail="Instrument already exists")
+    
+    db.add_instrument(instrument)
+    return Ok()
+
+@app.delete("/api/v1/admin/instrument/{ticker}", response_model=Ok)
+async def delete_instrument(
+    ticker: str,
+    current_user: User = Depends(get_admin_user)
+):
+    """Удаление торгового инструмента"""
+    if not db.get_instrument(ticker):
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    
+    # Проверяем, нет ли активных заявок по этому инструменту
+    if db.has_active_orders(ticker):
+        raise HTTPException(status_code=400, detail="Cannot delete instrument with active orders")
+    
+    db.delete_instrument(ticker)
+    return Ok()
+
+@app.post("/api/v1/admin/balance/deposit", response_model=Ok)
+async def deposit(
+    request: DepositRequest,
+    current_user: User = Depends(get_admin_user)
+):
+    """Пополнение баланса пользователя"""
+    user = db.get_user_by_id(request.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Проверяем существование инструмента
+    if not db.get_instrument(request.ticker):
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    
+    db.update_balance(request.user_id, request.ticker, request.amount)
+    return Ok()
+
+@app.post("/api/v1/admin/balance/withdraw", response_model=Ok)
+async def withdraw_balance(
+    request: WithdrawRequest,
+    current_user: User = Depends(get_admin_user)
+):
+    """Вывод средств с баланса пользователя"""
+    user = db.get_user_by_id(request.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    instrument = db.get_instrument(request.ticker)
+    if not instrument:
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    
+    balance = db.get_balance(user.id)
+    if balance.balances.get(request.ticker, 0) < request.amount:
+        raise HTTPException(status_code=400, detail="Insufficient balance")
+    try:
+        db.update_balance(user.id, request.ticker, -request.amount)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return Ok(success=True)

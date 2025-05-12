@@ -25,13 +25,13 @@ class User(BaseModel):
     password_hash: str
 
     @classmethod
-    def create(cls, name: str, password: str) -> "User":
+    def create(cls, name: str, password: str, role: UserRole = UserRole.USER) -> "User":
         # Генерируем хеш пароля
         password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
         return cls(
             id=uuid.uuid4(),
             name=name,
-            role=UserRole.USER,
+            role=role,
             api_key=f"key-{uuid.uuid4()}",
             password_hash=password_hash.decode('utf-8')
         )
@@ -40,7 +40,7 @@ class User(BaseModel):
         return bcrypt.checkpw(password.encode('utf-8'), self.password_hash.encode('utf-8'))
 
 class Balance(BaseModel):
-    user_id: uuid.UUID
+    user_id: UUID4
     balances: Dict[str, int] = {}  # ticker -> amount mapping 
 
 class Direction(str, Enum):
@@ -56,11 +56,11 @@ class OrderStatus(str, Enum):
 
 class ExecutionDetails(BaseModel):
     """Детали исполнения заявки"""
-    execution_id: uuid.UUID
+    execution_id: UUID4
     timestamp: datetime
     quantity: int
     price: int
-    counterparty_order_id: uuid.UUID  # ID встречной заявки
+    counterparty_order_id: UUID4  # ID встречной заявки
 
 class OrderExecutionSummary(BaseModel):
     """Сводка по исполнению заявки"""
@@ -82,9 +82,9 @@ class LimitOrderBody(BaseModel):
 
 class BaseOrder(BaseModel):
     """Базовая модель для всех типов заявок"""
-    id: uuid.UUID
+    id: UUID4
     status: OrderStatus
-    user_id: uuid.UUID
+    user_id: UUID4
     timestamp: datetime
     execution_summary: Optional[OrderExecutionSummary] = None
     rejection_reason: Optional[str] = None
@@ -97,7 +97,38 @@ class LimitOrder(BaseOrder):
     filled: int = 0  # Количество исполненных единиц
 
 class CreateOrderResponse(BaseModel):
+    order_id: UUID4
     success: bool = True
-    order_id: uuid.UUID
-    status: OrderStatus
-    rejection_reason: Optional[str] = None 
+    status: Optional[OrderStatus] = None
+    rejection_reason: Optional[str] = None
+
+class Ok(BaseModel):
+    success: bool = True
+
+class Instrument(BaseModel):
+    name: str
+    ticker: str
+
+class Level(BaseModel):
+    price: int
+    qty: int
+
+class L2OrderBook(BaseModel):
+    bid_levels: List[Level]
+    ask_levels: List[Level]
+
+class Transaction(BaseModel):
+    ticker: str
+    amount: int
+    price: int
+    timestamp: datetime
+
+class DepositRequest(BaseModel):
+    user_id: UUID4
+    ticker: str
+    amount: int
+
+class WithdrawRequest(BaseModel):
+    user_id: UUID4
+    ticker: str
+    amount: int 
