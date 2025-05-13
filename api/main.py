@@ -7,7 +7,8 @@ from .models import (
     MarketOrder, LimitOrder, MarketOrderBody, LimitOrderBody,
     CreateOrderResponse, OrderStatus, Direction,
     ExecutionDetails, OrderExecutionSummary,
-    Instrument, Ok, DepositRequest, WithdrawRequest
+    Instrument, Ok, DepositRequest, WithdrawRequest,
+    L2OrderBook
 )
 from .database import db
 from .auth import get_current_user, get_admin_user
@@ -167,7 +168,7 @@ async def list_orders(
     # Ограничиваем количество результатов
     return orders[:limit]
 
-@app.get("/api/v1/order/{order_id}")
+@app.get("/api/v1/order/{order_id}", response_model=Union[MarketOrder, LimitOrder])
 async def get_order(
     order_id: uuid.UUID,
     current_user: User = Depends(get_current_user)
@@ -292,3 +293,22 @@ async def withdraw_balance(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return Ok(success=True)
+
+@app.get("/api/v1/public/instrument")
+async def list_instruments():
+    """Список доступных инструментов"""
+    return list(db.instruments.values())
+
+@app.get("/api/v1/public/orderbook/{ticker}", response_model=L2OrderBook)
+async def get_orderbook(ticker: str, limit: int = Query(default=10, le=25)):
+    """Получение стакана заявок по инструменту"""
+    if not db.get_instrument(ticker):
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    return db.get_orderbook(ticker, limit)
+
+@app.get("/api/v1/public/transactions/{ticker}")
+async def get_transactions(ticker: str):
+    """Получение истории транзакций по инструменту"""
+    if not db.get_instrument(ticker):
+        raise HTTPException(status_code=404, detail="Instrument not found")
+    return db.get_transactions(ticker)

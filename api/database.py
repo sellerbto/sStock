@@ -1,7 +1,7 @@
 from typing import Dict, Optional, List, Union, Tuple
 from .models import (
     User, Balance, MarketOrder, LimitOrder, OrderStatus, Direction,
-    ExecutionDetails, OrderExecutionSummary, Instrument
+    ExecutionDetails, OrderExecutionSummary, Instrument, L2OrderBook, Level
 )
 from uuid import UUID, uuid4
 from datetime import datetime, UTC
@@ -116,6 +116,10 @@ class Database:
             limit_orders.sort(key=lambda x: x.body.price, reverse=True)
             # Фильтруем заявки с ценой не ниже нашей
             limit_orders = [o for o in limit_orders if o.body.price >= order.body.price]
+        
+        # Если нет пересекающихся заявок, просто добавляем в стакан
+        if not limit_orders:
+            return
         
         for limit_order in limit_orders:
             if remaining_qty == 0:
@@ -281,6 +285,53 @@ class Database:
         if order and order.execution_summary:
             return order.execution_summary
         return None
+
+    def get_orderbook(self, ticker: str, limit: int = 10) -> L2OrderBook:
+        """Получить стакан заявок по инструменту"""
+        # Получаем все активные лимитные заявки для этого тикера
+        active_orders = [
+            order for order in self.limit_orders.values()
+            if order.status in [OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]
+            and order.body.ticker == ticker
+        ]
+        
+        # Разделяем на покупки и продажи
+        bids = [order for order in active_orders if order.body.direction == Direction.BUY]
+        asks = [order for order in active_orders if order.body.direction == Direction.SELL]
+        
+        # Сортируем покупки по убыванию цены (лучшие цены сверху)
+        bids.sort(key=lambda x: x.body.price, reverse=True)
+        # Сортируем продажи по возрастанию цены (лучшие цены сверху)
+        asks.sort(key=lambda x: x.body.price)
+        
+        # Группируем заявки по ценам
+        bid_levels = {}
+        for order in bids:
+            remaining_qty = order.body.qty - order.filled
+            if remaining_qty <= 0:
+                continue
+            if order.body.price not in bid_levels:
+                bid_levels[order.body.price] = 0
+            bid_levels[order.body.price] += remaining_qty
+        
+        ask_levels = {}
+        for order in asks:
+            remaining_qty = order.body.qty - order.filled
+            if remaining_qty <= 0:
+                continue
+            if order.body.price not in ask_levels:
+                ask_levels[order.body.price] = 0
+            ask_levels[order.body.price] += remaining_qty
+        
+        # Преобразуем в список уровней
+        bid_levels_list = [Level(price=price, qty=qty) for price, qty in bid_levels.items()]
+        ask_levels_list = [Level(price=price, qty=qty) for price, qty in ask_levels.items()]
+        
+        # Ограничиваем количество уровней
+        return L2OrderBook(
+            bid_levels=bid_levels_list[:limit],
+            ask_levels=ask_levels_list[:limit]
+        )
 
     def _update_balances(self, buyer_id: UUID, seller_id: UUID, ticker: str, qty: int, price: int) -> None:
         """Обновить балансы после исполнения заявки"""

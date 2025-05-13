@@ -491,9 +491,15 @@ def test_matching_limit_orders(client, admin, reset_db):
     )
     client.post(
         "/api/v1/admin/balance/deposit",
-        json={"user_id": buyer["id"], "ticker": "USD", "amount": 10000},
+        json={"user_id": buyer["id"], "ticker": "USD", "amount": 20000},
         headers={"Authorization": f"Bearer {admin.api_key}"}
     )
+    # Проверяем баланс пользователя buyer
+    buyer_balance = client.get(
+        "/api/v1/balance",
+        headers={"Authorization": f"Bearer {buyer['api_key']}"}
+    )
+    print("Buyer balance after deposit:", buyer_balance.json())
     # seller выставляет лимитную заявку на продажу
     sell_order = client.post(
         "/api/v1/order",
@@ -552,4 +558,197 @@ def test_matching_limit_orders(client, admin, reset_db):
     assert buyer_balance.status_code == 200
     buyer_balance_data = buyer_balance.json()
     assert buyer_balance_data["BTC"] == 5  # 0 + 5
-    assert buyer_balance_data["USD"] == 5000  # 10000 - 5*1000 
+    assert buyer_balance_data["USD"] == 15000  # 20000 - 5*1000
+
+def test_get_orderbook(client, admin, reset_db):
+    """Тест получения стакана заявок (разные пользователи, не пересекающиеся цены)"""
+    # Регистрируем двух пользователей
+    buyer_resp = client.post(
+        "/api/v1/public/register",
+        json={"name": "buyer_ob", "password": "buyerpass_ob"}
+    )
+    buyer = buyer_resp.json()
+    print("buyer after registration:", buyer)
+    seller_resp = client.post(
+        "/api/v1/public/register",
+        json={"name": "seller_ob", "password": "sellerpass_ob"}
+    )
+    seller = seller_resp.json()
+    
+    # Добавляем инструменты
+    client.post(
+        "/api/v1/admin/instrument",
+        json={"name": "Bitcoin", "ticker": "BTC"},
+        headers={"Authorization": f"Bearer {admin.api_key}"}
+    )
+    client.post(
+        "/api/v1/admin/instrument",
+        json={"name": "US Dollar", "ticker": "USD"},
+        headers={"Authorization": f"Bearer {admin.api_key}"}
+    )
+    # Пополняем балансы
+    print("Depositing balance for buyer with user_id:", buyer["id"])
+    buyer_deposit_resp = client.post(
+        "/api/v1/admin/balance/deposit",
+        json={"user_id": buyer["id"], "ticker": "USD", "amount": 20000},
+        headers={"Authorization": f"Bearer {admin.api_key}"}
+    )
+    print("Buyer deposit response:", buyer_deposit_resp.status_code, buyer_deposit_resp.json())
+    assert buyer_deposit_resp.status_code == 200
+    assert buyer_deposit_resp.json().get("success") is True
+    seller_deposit_resp = client.post(
+        "/api/v1/admin/balance/deposit",
+        json={"user_id": seller["id"], "ticker": "BTC", "amount": 10},
+        headers={"Authorization": f"Bearer {admin.api_key}"}
+    )
+    print("Seller deposit response:", seller_deposit_resp.status_code, seller_deposit_resp.json())
+    assert seller_deposit_resp.status_code == 200
+    assert seller_deposit_resp.json().get("success") is True
+    # Проверяем баланс пользователя buyer
+    buyer_balance = client.get(
+        "/api/v1/balance",
+        headers={"Authorization": f"Bearer {buyer['api_key']}"}
+    )
+    print("Buyer balance after deposit:", buyer_balance.json())
+    
+    # seller выставляет заявки на продажу по высоким ценам
+    sell_order1 = client.post(
+        "/api/v1/order",
+        json={"direction": "SELL", "ticker": "BTC", "qty": 5, "price": 1200},
+        headers={"Authorization": f"Bearer {seller['api_key']}"}
+    )
+    sell_order2 = client.post(
+        "/api/v1/order",
+        json={"direction": "SELL", "ticker": "BTC", "qty": 3, "price": 1300},
+        headers={"Authorization": f"Bearer {seller['api_key']}"}
+    )
+    
+    # Проверяем статусы заявок на продажу
+    sell_order1_id = sell_order1.json()["order_id"]
+    sell_order2_id = sell_order2.json()["order_id"]
+    sell_order1_details = client.get(
+        f"/api/v1/order/{sell_order1_id}",
+        headers={"Authorization": f"Bearer {seller['api_key']}"}
+    )
+    sell_order2_details = client.get(
+        f"/api/v1/order/{sell_order2_id}",
+        headers={"Authorization": f"Bearer {seller['api_key']}"}
+    )
+    print("\nSell order 1 details:", sell_order1_details.json())
+    print("Sell order 2 details:", sell_order2_details.json())
+    print("Sell order 1 status:", sell_order1_details.json().get("status"))
+    print("Sell order 2 status:", sell_order2_details.json().get("status"))
+    
+    # buyer выставляет заявки на покупку по низким ценам
+    buy_order1 = client.post(
+        "/api/v1/order",
+        json={"direction": "BUY", "ticker": "BTC", "qty": 4, "price": 900},
+        headers={"Authorization": f"Bearer {buyer['api_key']}"}
+    )
+    print("buy_order1 response:", buy_order1.json())
+    assert buy_order1.status_code == 200, buy_order1.json()
+    assert "order_id" in buy_order1.json(), buy_order1.json()
+    buy_order2 = client.post(
+        "/api/v1/order",
+        json={"direction": "BUY", "ticker": "BTC", "qty": 2, "price": 800},
+        headers={"Authorization": f"Bearer {buyer['api_key']}"}
+    )
+    print("buy_order2 response:", buy_order2.json())
+    assert buy_order2.status_code == 200, buy_order2.json()
+    assert "order_id" in buy_order2.json(), buy_order2.json()
+    
+    # Проверяем статусы заявок на покупку
+    buy_order1_id = buy_order1.json()["order_id"]
+    buy_order2_id = buy_order2.json()["order_id"]
+    buy_order1_details = client.get(
+        f"/api/v1/order/{buy_order1_id}",
+        headers={"Authorization": f"Bearer {buyer['api_key']}"}
+    )
+    buy_order2_details = client.get(
+        f"/api/v1/order/{buy_order2_id}",
+        headers={"Authorization": f"Bearer {buyer['api_key']}"}
+    )
+    print("Buy order 1 details:", buy_order1_details.json())
+    print("Buy order 2 details:", buy_order2_details.json())
+    print("Buy order 1 status:", buy_order1_details.json().get("status"))
+    print("Buy order 2 status:", buy_order2_details.json().get("status"))
+    
+    # Получаем стакан заявок
+    response = client.get("/api/v1/public/orderbook/BTC")
+    assert response.status_code == 200
+    data = response.json()
+    print("\nOrderbook data:", data)
+    
+    # Проверяем структуру ответа
+    assert "bid_levels" in data
+    assert "ask_levels" in data
+    
+    # Проверяем сортировку и количество уровней
+    bid_levels = data["bid_levels"]
+    ask_levels = data["ask_levels"]
+    
+    print("\nBid levels:", bid_levels)
+    print("Ask levels:", ask_levels)
+    
+    assert len(bid_levels) == 2
+    assert len(ask_levels) == 2
+    
+    # Проверяем сортировку покупок (по убыванию цены)
+    assert bid_levels[0]["price"] > bid_levels[1]["price"]
+    assert bid_levels[0]["price"] == 900
+    assert bid_levels[1]["price"] == 800
+    
+    # Проверяем сортировку продаж (по возрастанию цены)
+    assert ask_levels[0]["price"] < ask_levels[1]["price"]
+    assert ask_levels[0]["price"] == 1200
+    assert ask_levels[1]["price"] == 1300
+    
+    # Проверяем количества
+    assert bid_levels[0]["qty"] == 4  # 4 BTC по 900
+    assert bid_levels[1]["qty"] == 2  # 2 BTC по 800
+    assert ask_levels[0]["qty"] == 5  # 5 BTC по 1200
+    assert ask_levels[1]["qty"] == 3  # 3 BTC по 1300
+
+def test_get_orderbook_nonexistent_instrument(client):
+    """Тест получения стакана заявок для несуществующего инструмента"""
+    response = client.get("/api/v1/public/orderbook/NONEXISTENT")
+    assert response.status_code == 404
+    assert "Instrument not found" in response.json()["detail"]
+
+def test_get_orderbook_limit(client, user, admin, reset_db):
+    """Тест получения стакана заявок с ограничением количества уровней"""
+    # Добавляем инструмент
+    client.post(
+        "/api/v1/admin/instrument",
+        json={"name": "Bitcoin", "ticker": "BTC"},
+        headers={"Authorization": f"Bearer {admin.api_key}"}
+    )
+    
+    # Пополняем балансы
+    client.post(
+        "/api/v1/admin/balance/deposit",
+        json={"user_id": str(user.id), "ticker": "BTC", "amount": 30},
+        headers={"Authorization": f"Bearer {admin.api_key}"}
+    )
+    client.post(
+        "/api/v1/admin/balance/deposit",
+        json={"user_id": str(user.id), "ticker": "USD", "amount": 30000},
+        headers={"Authorization": f"Bearer {admin.api_key}"}
+    )
+    
+    # Создаем 15 лимитных заявок на покупку с разными ценами
+    for i in range(15):
+        client.post(
+            "/api/v1/order",
+            json={"direction": "BUY", "ticker": "BTC", "qty": 1, "price": 1000 - i},
+            headers={"Authorization": f"Bearer {user.api_key}"}
+        )
+    
+    # Получаем стакан заявок с лимитом 10
+    response = client.get("/api/v1/public/orderbook/BTC?limit=10")
+    assert response.status_code == 200
+    data = response.json()
+    
+    # Проверяем, что вернулось не более 10 уровней
+    assert len(data["bid_levels"]) <= 10
+    assert len(data["ask_levels"]) <= 10 
