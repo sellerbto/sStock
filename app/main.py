@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 from .models import (
     NewUser, User, LoginUser, Balance,
     MarketOrder, LimitOrder, MarketOrderBody, LimitOrderBody,
-    CreateOrderResponse, OrderStatus
+    CreateOrderResponse, OrderStatus, Direction
 )
 from .database import db
 from .auth import get_current_user
@@ -83,6 +83,30 @@ async def create_order(
                 status_code=400,
                 detail=f"Недостаточно токенов {order_data.ticker} для продажи"
             )
+    else:  # Direction.BUY
+        # Для рыночной заявки на покупку проверяем наличие денег по лучшей цене
+        if isinstance(order_data, MarketOrderBody):
+            best_price = db.get_best_price(order_data.ticker, Direction.BUY)
+            if best_price is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Нет доступных предложений для покупки"
+                )
+            required_usd = best_price * order_data.qty
+            available_usd = balance.balances.get("USD", 0)
+            if available_usd < required_usd:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Недостаточно USD для покупки. Требуется: {required_usd}, доступно: {available_usd}"
+                )
+        else:  # LimitOrderBody
+            required_usd = order_data.price * order_data.qty
+            available_usd = balance.balances.get("USD", 0)
+            if available_usd < required_usd:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Недостаточно USD для покупки. Требуется: {required_usd}, доступно: {available_usd}"
+                )
     
     order_id = uuid.uuid4()
     timestamp = datetime.utcnow().isoformat()
@@ -96,6 +120,8 @@ async def create_order(
             body=order_data
         )
         db.add_market_order(order)
+        # Сразу пытаемся исполнить рыночную заявку
+        db.execute_market_order(order)
     else:
         order = LimitOrder(
             id=order_id,

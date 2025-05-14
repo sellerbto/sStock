@@ -1,5 +1,5 @@
-from typing import Dict, Optional, List, Union
-from .models import User, Balance, MarketOrder, LimitOrder, OrderStatus
+from typing import Dict, Optional, List, Union, Tuple
+from .models import User, Balance, MarketOrder, LimitOrder, OrderStatus, Direction
 from uuid import UUID
 from datetime import datetime
 
@@ -50,6 +50,100 @@ class Database:
             order for order in self.get_user_orders(user_id)
             if order.status in [OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]
         ]
+
+    def get_best_price(self, ticker: str, direction: Direction) -> Optional[int]:
+        """Получить лучшую цену для заданного направления"""
+        orders = [
+            order for order in self.limit_orders.values()
+            if order.status in [OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]
+            and order.body.ticker == ticker
+            and order.body.direction != direction  # Ищем встречные заявки
+        ]
+        
+        if not orders:
+            return None
+            
+        if direction == Direction.BUY:
+            # Для покупки ищем самую низкую цену продажи
+            return min(order.body.price for order in orders)
+        else:
+            # Для продажи ищем самую высокую цену покупки
+            return max(order.body.price for order in orders)
+
+    def execute_market_order(self, order: MarketOrder) -> None:
+        """Исполнить рыночную заявку"""
+        remaining_qty = order.body.qty
+        ticker = order.body.ticker
+        
+        # Получаем все активные лимитные заявки для этого тикера
+        limit_orders = [
+            limit_order for limit_order in self.limit_orders.values()
+            if limit_order.status in [OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]
+            and limit_order.body.ticker == ticker
+            and limit_order.body.direction != order.body.direction
+        ]
+        
+        # Сортируем заявки по цене
+        if order.body.direction == Direction.BUY:
+            # Для покупки сортируем по возрастанию цены
+            limit_orders.sort(key=lambda x: x.body.price)
+        else:
+            # Для продажи сортируем по убыванию цены
+            limit_orders.sort(key=lambda x: x.body.price, reverse=True)
+        
+        for limit_order in limit_orders:
+            if remaining_qty == 0:
+                break
+                
+            available_qty = limit_order.body.qty - limit_order.filled
+            execute_qty = min(remaining_qty, available_qty)
+            
+            # Исполняем часть заявки
+            self._execute_orders(order, limit_order, execute_qty)
+            
+            remaining_qty -= execute_qty
+        
+        # Обновляем статус рыночной заявки
+        if remaining_qty == 0:
+            order.status = OrderStatus.EXECUTED
+        elif remaining_qty < order.body.qty:
+            order.status = OrderStatus.PARTIALLY_EXECUTED
+        
+    def _execute_orders(self, order1: Union[MarketOrder, LimitOrder], order2: LimitOrder, qty: int) -> None:
+        """Исполнить заявки между собой"""
+        price = order2.body.price  # Используем цену лимитной заявки
+        
+        # Определяем покупателя и продавца
+        if order1.body.direction == Direction.BUY:
+            buyer, seller = order1, order2
+        else:
+            buyer, seller = order2, order1
+            
+        # Обновляем балансы
+        self._update_balances(
+            buyer.user_id, seller.user_id,
+            buyer.body.ticker, qty, price
+        )
+        
+        # Обновляем статус лимитной заявки
+        if isinstance(order2, LimitOrder):
+            order2.filled += qty
+            if order2.filled == order2.body.qty:
+                order2.status = OrderStatus.EXECUTED
+            else:
+                order2.status = OrderStatus.PARTIALLY_EXECUTED
+
+    def _update_balances(self, buyer_id: UUID, seller_id: UUID, ticker: str, qty: int, price: int) -> None:
+        """Обновить балансы после исполнения заявки"""
+        # Списываем деньги у покупателя
+        buyer_balance = self.get_balance(buyer_id)
+        self.update_balance(buyer_id, "USD", -qty * price)  # Предполагаем, что базовая валюта USD
+        self.update_balance(buyer_id, ticker, qty)
+        
+        # Начисляем деньги продавцу
+        seller_balance = self.get_balance(seller_id)
+        self.update_balance(seller_id, "USD", qty * price)
+        self.update_balance(seller_id, ticker, -qty)
 
 # Create a global database instance
 db = Database() 
