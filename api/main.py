@@ -16,6 +16,7 @@ import os
 import uuid
 from datetime import datetime, UTC
 from typing import Union, List, Optional
+from fastapi.openapi.utils import get_openapi
 
 app = FastAPI(
     title="Stock Exchange",
@@ -365,3 +366,30 @@ async def get_transactions(ticker: str):
         return db.get_transactions(ticker)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# Добавляем схему авторизации X-API-Key в OpenAPI
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    openapi_schema["components"]["securitySchemes"] = {
+        "ApiKeyAuth": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-API-Key"
+        }
+    }
+    # По умолчанию требовать ключ для всех эндпоинтов (можно убрать, если не нужно)
+    for path in openapi_schema["paths"].values():
+        for method in path.values():
+            method.setdefault("security", [{"ApiKeyAuth": []}])
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi

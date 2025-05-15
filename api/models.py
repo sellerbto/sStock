@@ -4,6 +4,11 @@ from enum import Enum
 import uuid
 import bcrypt
 from datetime import datetime
+from sqlalchemy import Column, Integer, String, Enum as SQLEnum, ForeignKey, DateTime, Numeric, Boolean, UniqueConstraint
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship, declarative_base
+
+Base = declarative_base()
 
 class UserRole(str, Enum):
     USER = "USER"
@@ -131,4 +136,91 @@ class DepositRequest(BaseModel):
 class WithdrawRequest(BaseModel):
     user_id: UUID4
     ticker: str
-    amount: int 
+    amount: int
+
+# SQLAlchemy models
+class UserModel(Base):
+    __tablename__ = "users"
+    
+    id = Column(String, primary_key=True)
+    name = Column(String, unique=True, nullable=False)
+    role = Column(SQLEnum(UserRole), nullable=False)
+    api_key = Column(String, unique=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    
+    # Добавляем связь с балансами
+    balances = relationship("BalanceModel", back_populates="user", cascade="all, delete-orphan")
+
+class BalanceModel(Base):
+    __tablename__ = "balances"
+    
+    id = Column(Integer, primary_key=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    ticker = Column(String, nullable=False)
+    amount = Column(Numeric, nullable=False, default=0)
+    locked_amount = Column(Numeric, nullable=False, default=0)
+    
+    # Добавляем связь с пользователем
+    user = relationship("UserModel", back_populates="balances")
+    
+    __table_args__ = (
+        UniqueConstraint('user_id', 'ticker', name='uix_user_ticker'),
+    )
+
+class OrderModel(Base):
+    __tablename__ = "orders"
+    
+    id = Column(String, primary_key=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    ticker = Column(String, nullable=False)
+    direction = Column(SQLEnum(Direction), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    price = Column(Numeric, nullable=True)  # None для рыночных заявок
+    status = Column(SQLEnum(OrderStatus), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    # Связь с пользователем
+    user = relationship("UserModel")
+    
+    # Связь с исполнениями (где эта заявка является основной)
+    executions = relationship(
+        "ExecutionModel",
+        primaryjoin="OrderModel.id==ExecutionModel.order_id",
+        cascade="all, delete-orphan"
+    )
+    
+    # Связь с исполнениями (где эта заявка является контрагентской)
+    counterparty_executions = relationship(
+        "ExecutionModel",
+        primaryjoin="OrderModel.id==ExecutionModel.counterparty_order_id"
+    )
+
+class ExecutionModel(Base):
+    __tablename__ = "executions"
+    
+    id = Column(Integer, primary_key=True)
+    order_id = Column(String, ForeignKey("orders.id"), nullable=False)
+    counterparty_order_id = Column(String, ForeignKey("orders.id"), nullable=False)
+    quantity = Column(Integer, nullable=False)
+    price = Column(Numeric, nullable=False)
+    executed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    
+    # Связь с основной заявкой
+    order = relationship(
+        "OrderModel",
+        foreign_keys=[order_id]
+    )
+    
+    # Связь с контрагентской заявкой
+    counterparty_order = relationship(
+        "OrderModel",
+        foreign_keys=[counterparty_order_id]
+    )
+
+class InstrumentModel(Base):
+    __tablename__ = "instruments"
+    
+    ticker = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow) 
