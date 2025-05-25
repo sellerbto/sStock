@@ -2,9 +2,7 @@
 name = "stock-exchange"
 version = "0.1.0"
 description = "A stock exchange trading platform"
-authors = [
-    {name = "Your Name", email = "your.email@example.com"}
-]
+authors = [{ name = "Your Name", email = "your.email@example.com" }]
 dependencies = [
     "fastapi>=0.104.0",
     "uvicorn>=0.24.0",
@@ -40,3 +38,7 @@ line-ending = "auto"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --cov=app --cov-report=term-missing"
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"

@@ -1,0 +1,51 @@
+on:
+  push:
+    branches: ["ci-cd"]
+  pull_request:
+    branches: ["ci-cd"]
+
+env:
+  API_IMAGE: cr.yandex/$CR_REGISTRY/$CR_REPOSITORY:sstock-api:${{ github.sha }}
+  NGINX_IMAGE: sstock-nginx:${{ github.sha }}
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Login to Yandex Cloud Container Registry
+        id: login-cr
+        uses: yc-actions/yc-cr-login@v1
+        with:
+          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+
+      - name: Build, tag, and push image to Yandex Cloud Container Registry
+        env:
+          CR_REGISTRY: ${{ secrets.YC_CR_REGISTRY }}
+          CR_REPOSITORY: ${{ secrets.YC_CR_REPOSITORY }}
+        run: |
+          docker build -t $API_IMAGE -f ./api/Dockerfile .
+          docker push $API_IMAGE
+
+      - name: Deploy COI VM
+        id: deploy-coi
+        uses: yc-actions/yc-coi-deploy@v2
+        env:
+          CR_REGISTRY: ${{ secrets.YC_CR_REGISTRY }}
+          CR_REPOSITORY: ${{ secrets.YC_CR_REPOSITORY }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+        with:
+          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+          folder-id: ${{ secrets.YC_FOLDER_ID }}
+          vm-name: ${{ secrets.YC_VM_NAME }}
+          vm-service-account-id: ${{ secrets.YC_VM_SERVICE_ACCOUNT_ID }}
+          vm-cores: 2
+          vm-memory: 2Gb
+          vm-core-fraction: 100
+          vm-subnet-id: ${{ secrets.YC_VM_SUBNET_ID }}
+          user-data-path: "./user-data.yaml"
+          docker-compose-path: "./docker-compose.yaml"
