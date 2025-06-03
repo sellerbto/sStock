@@ -1,0 +1,68 @@
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: secrets
+    outputs:
+      image-tag: ${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Login to Yandex Cloud Container Registry
+        id: login-cr
+        uses: yc-actions/yc-cr-login@v1
+        with:
+          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+
+      - name: Build, tag, and push image to Yandex Cloud Container Registry
+        env:
+          CR_REGISTRY: ${{ secrets.YC_CR_REGISTRY }}
+          CR_REPOSITORY: ${{ secrets.YC_CR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build . -t cr.yandex/$CR_REGISTRY/$CR_REPOSITORY:$IMAGE_TAG -f ./api/Dockerfile
+          docker push cr.yandex/$CR_REGISTRY/$CR_REPOSITORY:$IMAGE_TAG
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment: secrets
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Deploy COI VM
+        id: deploy-coi
+        uses: yc-actions/yc-coi-deploy@v2
+        env:
+          CR_REGISTRY: ${{ secrets.YC_CR_REGISTRY }}
+          CR_REPOSITORY: ${{ secrets.YC_CR_REPOSITORY }}
+          IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          YC_VM_SSH: ${{ secrets.YC_VM_SSH }}
+          YC_VM_USERNAME: ${{ secrets.YC_VM_USERNAME }}
+          API_IMAGE: cr.yandex/${{ secrets.YC_CR_REGISTRY }}/${{ secrets.YC_CR_REPOSITORY }}:${{ needs.build.outputs.image-tag }}
+        with:
+          yc-sa-json-credentials: ${{ secrets.YC_SA_JSON_CREDENTIALS }}
+          folder-id: ${{ secrets.YC_FOLDER_ID }}
+          vm-name: ${{ secrets.YC_VM_NAME }}
+          vm-service-account-id: ${{ secrets.YC_VM_SERVICE_ACCOUNT_ID }}
+          vm-cores: 2
+          vm-platform-id: "standard-v3"
+          vm-memory: 2Gb
+          vm-core-fraction: 100
+          vm-subnet-id: ${{ secrets.YC_VM_SUBNET_ID }}
+          user-data-path: "./user-data.yaml"
+          docker-compose-path: "./docker-compose.yc.yml"
