@@ -1,7 +1,7 @@
 from fastapi import Request, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-from app.models import User
+from .models import User
 from .database import db
 
 security = HTTPBearer()

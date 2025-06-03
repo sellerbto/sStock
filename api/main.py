@@ -30,12 +30,12 @@ app.add_middleware(
 )
 
 # Mount static files
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
+app.mount("/static", StaticFiles(directory="api/static"), name="static")
 
 @app.get("/")
 async def root():
     try:
-        return FileResponse("app/static/index.html", media_type="text/html")
+        return FileResponse("api/static/index.html", media_type="text/html")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -44,7 +44,7 @@ async def register(new_user: NewUser):
     # Проверяем, не существует ли уже пользователь с таким именем
     if db.get_user_by_name(new_user.name):
         raise HTTPException(status_code=400, detail="Пользователь с таким именем уже существует")
-    
+
     user = User.create(name=new_user.name, password=new_user.password)
     db.add_user(user)
     return user
@@ -71,10 +71,10 @@ async def create_order(
     current_user: User = Depends(get_current_user)
 ):
     """Создание новой заявки (рыночной или лимитной)"""
-    
+
     # Проверяем баланс пользователя
     balance = db.get_balance(current_user.id)
-    
+
     if order_data.direction == Direction.SELL:
         # Проверяем достаточно ли токенов для продажи
         available_amount = balance.balances.get(order_data.ticker, 0)
@@ -107,7 +107,7 @@ async def create_order(
                     status_code=400,
                     detail=f"Недостаточно USD для покупки. Требуется: {required_usd}, доступно: {available_usd}"
                 )
-    
+
     order_id = uuid.uuid4()
     timestamp = datetime.utcnow().isoformat()
 
