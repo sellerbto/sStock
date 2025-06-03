@@ -43,3 +43,5 @@ htmlcov/
 # Docker
 .docker/
 docker-compose.override.yml
+
+tz.txt
