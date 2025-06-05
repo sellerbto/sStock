@@ -42,9 +42,10 @@ services:
         - "80:80"
         - "443:443"
       restart: always
-      environment:
-        NGINX_CERT: {{ env.NGINX_CERT }}
-        NGINX_CERT_KEY: {{ env.NGINX_CERT_KEY }}
+      volumes:
+        - /certs/nginx.crt:/etc/nginx/certs/certificate.crt
+        - /certs/nginx.key:/etc/nginx/certs/certificate.key
+
 
 volumes:
   postgres_data:
