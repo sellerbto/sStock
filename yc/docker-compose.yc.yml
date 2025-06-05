@@ -1,4 +1,4 @@
-version: "3.8"
+version: "3.7"
 
 services:
   app:
@@ -42,6 +42,9 @@ services:
         - "80:80"
         - "443:443"
       restart: always
+      environment:
+        NGINX_CERT: {{ env.NGINX_CERT }}
+        NGINX_CERT_KEY: {{ env.NGINX_CERT_KEY }}
 
 volumes:
   postgres_data:
