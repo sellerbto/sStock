@@ -45,8 +45,6 @@ services:
       environment:
         - NGINX_CERT: {{ env.NGINX_CERT }}
         - NGINX_CERT_KEY: {{ env.NGINX_CERT_KEY }}
-      volumes:
-        - ./nginx.conf:/etc/nginx/nginx.conf
       depends_on:
         - app
 
