@@ -5,10 +5,7 @@ services:
     image: {{ env.API_IMAGE }}
     restart: always
     ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL={{ env.DATABASE_URL }}
-      - SECRET_KEY={{ env.SECRET_KEY }}
+      - "80:8000"
     command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips="*"
     depends_on:
       db:
@@ -18,11 +15,11 @@ services:
     image: postgres:16.2-bookworm
     restart: always
     environment:
-      - POSTGRES_USER={{ env.POSTGRES_USER }}
-      - POSTGRES_PASSWORD={{ env.POSTGRES_PASSWORD }}
-      - POSTGRES_DB={{ env.POSTGRES_DB }}
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=stock_exchange
     healthcheck:
-          test: [ "CMD-SHELL", "sh -c 'pg_isready -U ${{ env.POSTGRES_USER }} -d ${{ env.POSTGRES_DB }}'" ]
+          test: [ "CMD-SHELL", "sh -c 'pg_isready -U postgres -d stock_exchange'" ]
           interval: 10s
           timeout: 3s
           retries: 3
