@@ -47,8 +47,6 @@ jobs:
         uses: yc-actions/yc-coi-deploy@v2
         env:
           CR_REGISTRY: ${{ secrets.YC_CR_REGISTRY }}
-          CR_REPOSITORY_API: ${{ secrets.YC_CR_REPOSITORY_API }}
-          CR_REPOSITORY_NGINX: ${{ secrets.YC_CR_REPOSITORY_NGINX }}
           IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
           POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
@@ -57,8 +55,8 @@ jobs:
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           YC_VM_SSH: ${{ secrets.YC_VM_SSH }}
           YC_VM_USERNAME: ${{ secrets.YC_VM_USERNAME }}
-          API_IMAGE: cr.yandex/$CR_REGISTRY/$CR_REPOSITORY_API:${{ github.sha }}
-          NGINX_IMAGE: cr.yandex/$CR_REGISTRY/$CR_REPOSITORY_NGINX:${{ github.sha }}
+          API_IMAGE: cr.yandex/${{ secrets.YC_CR_REGISTRY }}/${{ secrets.YC_CR_REPOSITORY_API }}:${{ github.sha }}
+          NGINX_IMAGE: cr.yandex/${{ secrets.YC_CR_REGISTRY }}/${{ secrets.YC_CR_REPOSITORY_NGINX }}:${{ github.sha }}
           NGINX_CERT: ${{ secrets.NGINX_CERT }}
           NGINX_CERT_KEY: ${{ secrets.NGINX_CERT_KEY }}
         with:
