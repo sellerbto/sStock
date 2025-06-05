@@ -3,23 +3,42 @@ version: "3.8"
 services:
   app:
     image: {{ env.API_IMAGE }}
+    restart: always
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=${DATABASE_URL}
-      - SECRET_KEY=${SECRET_KEY}
-    command: uvicorn api.main:app --host 0.0.0.0 --port 8000
+      - DATABASE_URL={{ env.DATABASE_URL }}
+      - SECRET_KEY={{ env.SECRET_KEY }}
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips="*"
+    depends_on:
+      db:
+        condition: service_healthy
 
   db:
-    image: postgres:15
-    ports:
-      - "5432:5432"
+    image: postgres:16.2-bookworm
+    restart: always
     environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER={{ env.POSTGRES_USER }}
+      - POSTGRES_PASSWORD={{ env.POSTGRES_PASSWORD }}
+      - POSTGRES_DB={{ env.POSTGRES_DB }}
+    healthcheck:
+          test: [ "CMD-SHELL", "sh -c 'pg_isready -U ${{ env.POSTGRES_USER }} -d ${{ env.POSTGRES_DB }}'" ]
+          interval: 10s
+          timeout: 3s
+          retries: 3
     volumes:
       - postgres_data:/var/lib/postgresql/data
+
+  pgadmin:
+      container_name: pgadmin
+      image: dpage/pgadmin4
+      environment:
+        - PGADMIN_DEFAULT_EMAIL=pgadmin4@pgadmin.org
+        - PGADMIN_DEFAULT_PASSWORD=admin
+      ports:
+        - "5050:80"
+      depends_on:
+        - db
 
 volumes:
   postgres_data:
