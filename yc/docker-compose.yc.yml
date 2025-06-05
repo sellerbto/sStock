@@ -45,8 +45,6 @@ services:
       environment:
         - NGINX_CERT: {{ env.NGINX_CERT }}
         - NGINX_CERT_KEY: {{ env.NGINX_CERT_KEY }}
-      depends_on:
-        - app
 
 volumes:
   postgres_data:
