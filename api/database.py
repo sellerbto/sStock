@@ -36,7 +36,7 @@ class Database:
         """Добавление пользователя"""
         with self.get_session() as session:
             db_user = UserModel(
-                id=user.id,
+                id=str(user.id),
                 name=user.name,
                 role=user.role,
                 api_key=user.api_key,
