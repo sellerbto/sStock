@@ -19,10 +19,6 @@ from typing import Union, List, Optional
 from fastapi.openapi.utils import get_openapi
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
 
 app = FastAPI(
     title="Stock Exchange",
