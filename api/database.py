@@ -163,13 +163,18 @@ class Database:
 
     def add_instrument(self, instrument: Instrument) -> None:
         """Добавление инструмента"""
-        with self.get_session() as session:
-            db_instrument = InstrumentModel(
-                ticker=instrument.ticker,
-                name=instrument.name,
-                is_active=True
-            )
-            session.add(db_instrument)
+        try:
+            with self.get_session() as session:
+                db_instrument = InstrumentModel(
+                    ticker=instrument.ticker.upper(),  # Приводим к верхнему регистру
+                    name=instrument.name.strip(),  # Убираем лишние пробелы
+                    is_active=True
+                )
+                session.add(db_instrument)
+        except IntegrityError:
+            raise ValueError(f"Instrument with ticker {instrument.ticker} already exists")
+        except Exception as e:
+            raise ValueError(f"Failed to add instrument: {str(e)}")
 
     def get_instrument(self, ticker: str) -> Optional[Instrument]:
         """Получение инструмента"""

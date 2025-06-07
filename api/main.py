@@ -17,6 +17,8 @@ import uuid
 from datetime import datetime, UTC
 from typing import Union, List, Optional
 from fastapi.openapi.utils import get_openapi
+from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
 
 app = FastAPI(
     title="Stock Exchange",
@@ -41,6 +43,27 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail}
+    )
+
+@app.exception_handler(ValidationError)
+async def validation_exception_handler(request: Request, exc: ValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()}
+    )
+
+@app.exception_handler(IntegrityError)
+async def integrity_exception_handler(request: Request, exc: IntegrityError):
+    return JSONResponse(
+        status_code=400,
+        content={"detail": "Database integrity error"}
+    )
+
+@app.exception_handler(Exception)
+async def general_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)}
     )
 
 @app.get("/")
@@ -267,11 +290,24 @@ async def add_instrument(
 ):
     """Добавление нового торгового инструмента"""
     try:
+        # Проверяем, что тикер и название не пустые
+        if not instrument.ticker.strip():
+            raise HTTPException(status_code=400, detail="Ticker cannot be empty")
+        if not instrument.name.strip():
+            raise HTTPException(status_code=400, detail="Name cannot be empty")
+            
+        # Проверяем, что тикер содержит только буквы и цифры
+        if not instrument.ticker.isalnum():
+            raise HTTPException(status_code=400, detail="Ticker must contain only letters and numbers")
+            
+        # Проверяем, что инструмент еще не существует
         if db.get_instrument(instrument.ticker):
             raise HTTPException(status_code=400, detail="Instrument already exists")
         
         db.add_instrument(instrument)
         return Ok()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

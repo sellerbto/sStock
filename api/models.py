@@ -30,7 +30,7 @@ class LoginUser(BaseModel):
 
 class User(BaseModel):
     id: UUID4
-    name: str
+    name: str = Field(..., min_length=3, max_length=50)
     role: UserRole
     api_key: str
     password_hash: str
@@ -52,7 +52,7 @@ class User(BaseModel):
 
 class Balance(BaseModel):
     user_id: UUID4
-    balances: Dict[str, int] = {}  # ticker -> amount mapping 
+    balances: Dict[str, int] = Field(default_factory=dict)
 
 class Direction(str, Enum):
     BUY = "BUY"
@@ -69,27 +69,39 @@ class ExecutionDetails(BaseModel):
     """Детали исполнения заявки"""
     execution_id: UUID4
     timestamp: datetime
-    quantity: int
-    price: int
+    quantity: int = Field(..., gt=0)
+    price: int = Field(..., gt=0)
     counterparty_order_id: UUID4  # ID встречной заявки
 
 class OrderExecutionSummary(BaseModel):
     """Сводка по исполнению заявки"""
-    total_filled: int  # Общее количество исполненных единиц
-    average_price: float  # Средняя цена исполнения
+    total_filled: int = Field(..., ge=0)  # Общее количество исполненных единиц
+    average_price: float = Field(..., ge=0)  # Средняя цена исполнения
     last_execution_time: Optional[datetime]  # Время последнего исполнения
-    executions: List[ExecutionDetails] = []  # Список всех исполнений
+    executions: List[ExecutionDetails] = Field(default_factory=list)  # Список всех исполнений
 
 class MarketOrderBody(BaseModel):
     direction: Direction
-    ticker: str
-    qty: int
+    ticker: str = Field(..., min_length=1, max_length=10)
+    qty: int = Field(..., gt=0)
+
+    @validator('ticker')
+    def ticker_alphanumeric(cls, v):
+        if not v.isalnum():
+            raise ValueError('Тикер должен содержать только буквы и цифры')
+        return v.upper()  # Приводим к верхнему регистру
 
 class LimitOrderBody(BaseModel):
     direction: Direction
-    ticker: str
-    qty: int
-    price: int
+    ticker: str = Field(..., min_length=1, max_length=10)
+    qty: int = Field(..., gt=0)
+    price: int = Field(..., gt=0)
+
+    @validator('ticker')
+    def ticker_alphanumeric(cls, v):
+        if not v.isalnum():
+            raise ValueError('Тикер должен содержать только буквы и цифры')
+        return v.upper()  # Приводим к верхнему регистру
 
 class BaseOrder(BaseModel):
     """Базовая модель для всех типов заявок"""
@@ -105,7 +117,7 @@ class MarketOrder(BaseOrder):
 
 class LimitOrder(BaseOrder):
     body: LimitOrderBody
-    filled: int = 0  # Количество исполненных единиц
+    filled: int = Field(default=0, ge=0)  # Количество исполненных единиц
 
 class CreateOrderResponse(BaseModel):
     order_id: UUID4
@@ -117,32 +129,62 @@ class Ok(BaseModel):
     success: bool = True
 
 class Instrument(BaseModel):
-    name: str
-    ticker: str
+    name: str = Field(..., min_length=1, max_length=100)
+    ticker: str = Field(..., min_length=1, max_length=10)
+
+    @validator('ticker')
+    def ticker_alphanumeric(cls, v):
+        if not v.isalnum():
+            raise ValueError('Тикер должен содержать только буквы и цифры')
+        return v.upper()  # Приводим к верхнему регистру
+
+    @validator('name')
+    def name_not_empty(cls, v):
+        if not v.strip():
+            raise ValueError('Название не может быть пустым')
+        return v.strip()
 
 class Level(BaseModel):
-    price: int
-    qty: int
+    price: int = Field(..., gt=0)
+    qty: int = Field(..., gt=0)
 
 class L2OrderBook(BaseModel):
-    bid_levels: List[Level]
-    ask_levels: List[Level]
+    bid_levels: List[Level] = Field(default_factory=list)
+    ask_levels: List[Level] = Field(default_factory=list)
 
 class Transaction(BaseModel):
-    ticker: str
-    amount: int
-    price: int
+    ticker: str = Field(..., min_length=1, max_length=10)
+    amount: int = Field(..., gt=0)
+    price: int = Field(..., gt=0)
     timestamp: datetime
+
+    @validator('ticker')
+    def ticker_alphanumeric(cls, v):
+        if not v.isalnum():
+            raise ValueError('Тикер должен содержать только буквы и цифры')
+        return v.upper()  # Приводим к верхнему регистру
 
 class DepositRequest(BaseModel):
     user_id: UUID4
-    ticker: str
-    amount: int
+    ticker: str = Field(..., min_length=1, max_length=10)
+    amount: int = Field(..., gt=0)
+
+    @validator('ticker')
+    def ticker_alphanumeric(cls, v):
+        if not v.isalnum():
+            raise ValueError('Тикер должен содержать только буквы и цифры')
+        return v.upper()  # Приводим к верхнему регистру
 
 class WithdrawRequest(BaseModel):
     user_id: UUID4
-    ticker: str
-    amount: int
+    ticker: str = Field(..., min_length=1, max_length=10)
+    amount: int = Field(..., gt=0)
+
+    @validator('ticker')
+    def ticker_alphanumeric(cls, v):
+        if not v.isalnum():
+            raise ValueError('Тикер должен содержать только буквы и цифры')
+        return v.upper()  # Приводим к верхнему регистру
 
 # SQLAlchemy models
 class UserModel(Base):
