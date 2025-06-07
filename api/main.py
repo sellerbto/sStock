@@ -382,7 +382,8 @@ def custom_openapi():
         "ApiKeyAuth": {
             "type": "apiKey",
             "in": "header",
-            "name": "X-API-Key"
+            "name": "Authorization",
+            "description": "Format: TOKEN {token}"
         }
     }
     # По умолчанию требовать ключ для всех эндпоинтов (можно убрать, если не нужно)

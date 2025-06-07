@@ -3,21 +3,36 @@ from typing import Optional
 from .database import db
 from .models import User, UserRole
 
-async def get_current_user(x_api_key: Optional[str] = Header(None, alias="X-API-Key")) -> User:
+async def get_current_user(authorization: Optional[str] = Header(None)) -> User:
     """
-    Получает текущего пользователя по X-API-Key.
+    Получает текущего пользователя по токену из заголовка Authorization.
+    Ожидает формат: Authorization: TOKEN {token}
     """
-    if not x_api_key:
+    if not authorization:
         raise HTTPException(
             status_code=401,
-            detail="X-API-Key header is missing"
+            detail="Authorization header is missing"
         )
 
-    user = db.get_user_by_api_key(x_api_key)
+    try:
+        # Проверяем формат заголовка
+        auth_type, token = authorization.split(" ", 1)
+        if auth_type != "TOKEN":
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid authorization type. Expected: TOKEN"
+            )
+    except ValueError:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid authorization header format. Expected: TOKEN {token}"
+        )
+
+    user = db.get_user_by_api_key(token)
     if not user:
         raise HTTPException(
             status_code=401,
-            detail="Invalid API key"
+            detail="Invalid token"
         )
 
     return user

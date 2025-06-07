@@ -37,7 +37,7 @@ class User(BaseModel):
             id=uuid.uuid4(),
             name=name,
             role=role,
-            api_key=f"key-{uuid.uuid4()}",
+            api_key=str(uuid.uuid4()),  # Генерируем чистый UUID без префикса
             password_hash=password_hash.decode('utf-8')
         )
 
