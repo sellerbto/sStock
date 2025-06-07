@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine, select, update, and_, or_, func
 from sqlalchemy.orm import sessionmaker, Session
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from contextlib import contextmanager
 from typing import Dict, Optional, List, Union, Tuple
 from .models import (
@@ -11,6 +11,18 @@ from .models import (
 )
 from uuid import UUID, uuid4
 from datetime import datetime, UTC
+
+class DatabaseError(Exception):
+    """Базовый класс для ошибок базы данных"""
+    pass
+
+class DatabaseIntegrityError(DatabaseError):
+    """Ошибка целостности данных"""
+    pass
+
+class DatabaseNotFoundError(DatabaseError):
+    """Ошибка - запись не найдена"""
+    pass
 
 class Database:
     def __init__(self, connection_string: str):
@@ -26,70 +38,95 @@ class Database:
         try:
             yield session
             session.commit()
-        except Exception:
+        except IntegrityError as e:
             session.rollback()
-            raise
+            raise DatabaseIntegrityError(str(e))
+        except SQLAlchemyError as e:
+            session.rollback()
+            raise DatabaseError(str(e))
+        except Exception as e:
+            session.rollback()
+            raise DatabaseError(f"Unexpected error: {str(e)}")
         finally:
             session.close()
 
     def add_user(self, user: User) -> None:
         """Добавление пользователя"""
-        with self.get_session() as session:
-            db_user = UserModel(
-                id=str(user.id),
-                name=user.name,
-                role=user.role,
-                api_key=user.api_key,
-                password_hash=user.password_hash
-            )
-            session.add(db_user)
+        try:
+            with self.get_session() as session:
+                db_user = UserModel(
+                    id=str(user.id),
+                    name=user.name,
+                    role=user.role,
+                    api_key=user.api_key,
+                    password_hash=user.password_hash
+                )
+                session.add(db_user)
+        except DatabaseIntegrityError as e:
+            raise DatabaseIntegrityError(f"User with name {user.name} or api_key {user.api_key} already exists")
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to add user: {str(e)}")
 
     def get_user_by_api_key(self, api_key: str) -> Optional[User]:
         """Получение пользователя по API ключу"""
-        with self.get_session() as session:
-            db_user = session.query(UserModel).filter(UserModel.api_key == api_key).first()
-            if not db_user:
-                return None
-            return User(
-                id=db_user.id,
-                name=db_user.name,
-                role=db_user.role,
-                api_key=db_user.api_key,
-                password_hash=db_user.password_hash
-            )
+        try:
+            with self.get_session() as session:
+                db_user = session.query(UserModel).filter(UserModel.api_key == api_key).first()
+                if not db_user:
+                    return None
+                return User(
+                    id=db_user.id,
+                    name=db_user.name,
+                    role=db_user.role,
+                    api_key=db_user.api_key,
+                    password_hash=db_user.password_hash
+                )
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to get user by api_key: {str(e)}")
 
     def get_user_by_name(self, name: str) -> Optional[User]:
         """Получение пользователя по имени"""
-        with self.get_session() as session:
-            db_user = session.query(UserModel).filter(UserModel.name == name).first()
-            if not db_user:
-                return None
-            return User(
-                id=db_user.id,
-                name=db_user.name,
-                role=db_user.role,
-                api_key=db_user.api_key,
-                password_hash=db_user.password_hash
-            )
+        try:
+            with self.get_session() as session:
+                db_user = session.query(UserModel).filter(UserModel.name == name).first()
+                if not db_user:
+                    return None
+                return User(
+                    id=db_user.id,
+                    name=db_user.name,
+                    role=db_user.role,
+                    api_key=db_user.api_key,
+                    password_hash=db_user.password_hash
+                )
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to get user by name: {str(e)}")
 
     def get_user_by_id(self, user_id: UUID) -> Optional[User]:
         """Получение пользователя по ID"""
-        with self.get_session() as session:
-            db_user = session.query(UserModel).filter(UserModel.id == str(user_id)).first()
-            if not db_user:
-                return None
-            return User(
-                id=db_user.id,
-                name=db_user.name,
-                role=db_user.role,
-                api_key=db_user.api_key,
-                password_hash=db_user.password_hash
-            )
+        try:
+            with self.get_session() as session:
+                db_user = session.query(UserModel).filter(UserModel.id == str(user_id)).first()
+                if not db_user:
+                    return None
+                return User(
+                    id=db_user.id,
+                    name=db_user.name,
+                    role=db_user.role,
+                    api_key=db_user.api_key,
+                    password_hash=db_user.password_hash
+                )
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to get user by id: {str(e)}")
 
     def delete_user(self, user_id: UUID) -> None:
         """Удаление пользователя"""
-        with self.get_session() as session:
-            session.query(UserModel).filter(UserModel.id == str(user_id)).delete()
+        try:
+            with self.get_session() as session:
+                result = session.query(UserModel).filter(UserModel.id == str(user_id)).delete()
+                if result == 0:
+                    raise DatabaseNotFoundError(f"User {user_id} not found")
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to delete user: {str(e)}")
 
     def get_balance(self, user_id: UUID) -> Balance:
         """Получение баланса пользователя"""
@@ -166,40 +203,49 @@ class Database:
         try:
             with self.get_session() as session:
                 db_instrument = InstrumentModel(
-                    ticker=instrument.ticker.upper(),  # Приводим к верхнему регистру
-                    name=instrument.name.strip(),  # Убираем лишние пробелы
+                    ticker=instrument.ticker.upper(),
+                    name=instrument.name.strip(),
                     is_active=True
                 )
                 session.add(db_instrument)
-        except IntegrityError:
-            raise ValueError(f"Instrument with ticker {instrument.ticker} already exists")
-        except Exception as e:
-            raise ValueError(f"Failed to add instrument: {str(e)}")
+        except DatabaseIntegrityError as e:
+            raise DatabaseIntegrityError(f"Instrument with ticker {instrument.ticker} already exists")
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to add instrument: {str(e)}")
 
     def get_instrument(self, ticker: str) -> Optional[Instrument]:
         """Получение инструмента"""
-        with self.get_session() as session:
-            db_instrument = session.query(InstrumentModel).filter(
-                and_(
-                    InstrumentModel.ticker == ticker,
-                    InstrumentModel.is_active == True
-                )
-            ).first()
-            
-            if not db_instrument:
-                return None
+        try:
+            with self.get_session() as session:
+                db_instrument = session.query(InstrumentModel).filter(
+                    and_(
+                        InstrumentModel.ticker == ticker.upper(),
+                        InstrumentModel.is_active == True
+                    )
+                ).first()
                 
-            return Instrument(
-                ticker=db_instrument.ticker,
-                name=db_instrument.name
-            )
+                if not db_instrument:
+                    return None
+                    
+                return Instrument(
+                    ticker=db_instrument.ticker,
+                    name=db_instrument.name
+                )
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to get instrument: {str(e)}")
 
     def delete_instrument(self, ticker: str) -> None:
         """Удаление инструмента"""
-        with self.get_session() as session:
-            session.query(InstrumentModel).filter(
-                InstrumentModel.ticker == ticker
-            ).update({"is_active": False})
+        try:
+            with self.get_session() as session:
+                result = session.query(InstrumentModel).filter(
+                    InstrumentModel.ticker == ticker.upper()
+                ).update({"is_active": False})
+                
+                if result == 0:
+                    raise DatabaseNotFoundError(f"Instrument {ticker} not found")
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to delete instrument: {str(e)}")
 
     def add_market_order(self, order: MarketOrder) -> None:
         """Добавление рыночной заявки"""
@@ -635,17 +681,23 @@ class Database:
                 OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED])
             ).all()
 
-    def get_all_instruments(self) -> list:
-        """Получение всех активных инструментов"""
-        with self.get_session() as session:
-            instruments = session.query(InstrumentModel).filter(InstrumentModel.is_active == True).all()
-            return [
-                Instrument(
-                    ticker=inst.ticker,
-                    name=inst.name
-                )
-                for inst in instruments
-            ]
+    def get_all_instruments(self) -> List[Instrument]:
+        """Получение списка всех активных инструментов"""
+        try:
+            with self.get_session() as session:
+                db_instruments = session.query(InstrumentModel).filter(
+                    InstrumentModel.is_active == True
+                ).all()
+                
+                return [
+                    Instrument(
+                        ticker=db_instrument.ticker,
+                        name=db_instrument.name
+                    )
+                    for db_instrument in db_instruments
+                ]
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to get instruments: {str(e)}")
 
 # Create a global database instance
 db = Database("postgresql://postgres:postgres@db:5432/stock_exchange") 

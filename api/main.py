@@ -8,9 +8,9 @@ from .models import (
     CreateOrderResponse, OrderStatus, Direction,
     ExecutionDetails, OrderExecutionSummary,
     Instrument, Ok, DepositRequest, WithdrawRequest,
-    L2OrderBook
+    L2OrderBook, Level
 )
-from .database import db
+from .database import db, Database, DatabaseError, DatabaseIntegrityError, DatabaseNotFoundError
 from .auth import get_current_user, get_admin_user
 import os
 import uuid
@@ -19,6 +19,10 @@ from typing import Union, List, Optional
 from fastapi.openapi.utils import get_openapi
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 app = FastAPI(
     title="Stock Exchange",
@@ -52,12 +56,23 @@ async def validation_exception_handler(request: Request, exc: ValidationError):
         content={"detail": exc.errors()}
     )
 
-@app.exception_handler(IntegrityError)
-async def integrity_exception_handler(request: Request, exc: IntegrityError):
-    return JSONResponse(
-        status_code=400,
-        content={"detail": "Database integrity error"}
-    )
+@app.exception_handler(DatabaseError)
+async def database_exception_handler(request: Request, exc: DatabaseError):
+    if isinstance(exc, DatabaseIntegrityError):
+        return JSONResponse(
+            status_code=409,
+            content={"detail": str(exc)}
+        )
+    elif isinstance(exc, DatabaseNotFoundError):
+        return JSONResponse(
+            status_code=404,
+            content={"detail": str(exc)}
+        )
+    else:
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Database error: {str(exc)}"}
+        )
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
@@ -75,36 +90,67 @@ async def root():
 
 @app.post("/api/v1/public/register", response_model=User)
 async def register(new_user: NewUser):
+    """Регистрация нового пользователя"""
     try:
         # Проверяем, не существует ли уже пользователь с таким именем
         if db.get_user_by_name(new_user.name):
-            raise HTTPException(status_code=400, detail="Пользователь с таким именем уже существует")
+            raise HTTPException(status_code=400, detail="User with this name already exists")
+            
+        if not new_user.name.strip():
+            raise HTTPException(status_code=400, detail="Username cannot be empty")
+            
+        if not new_user.name.isalnum():
+            raise HTTPException(status_code=400, detail="Username must contain only letters and numbers")
+            
+        if len(new_user.name) < 3:
+            raise HTTPException(status_code=400, detail="Username must be at least 3 characters long")
+            
+        if len(new_user.name) > 50:
+            raise HTTPException(status_code=400, detail="Username must be at most 50 characters long")
+            
+        if len(new_user.password) < 6:
+            raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
 
         user = User.create(name=new_user.name, password=new_user.password)
         db.add_user(user)
         return user
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/public/login", response_model=User)
 async def login(login_data: LoginUser):
+    """Вход в систему"""
     try:
+        if not login_data.name.strip():
+            raise HTTPException(status_code=400, detail="Username cannot be empty")
+            
+        if not login_data.password:
+            raise HTTPException(status_code=400, detail="Password cannot be empty")
+            
         user = db.get_user_by_name(login_data.name)
         if not user or not user.check_password(login_data.password):
-            raise HTTPException(status_code=401, detail="Неверное имя пользователя или пароль")
+            raise HTTPException(status_code=401, detail="Invalid username or password")
         return user
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/me", response_model=User)
 async def get_me(current_user: User = Depends(get_current_user)):
+    """Получение информации о текущем пользователе"""
     return current_user
 
 @app.get("/api/v1/balance")
 async def get_balances(current_user: User = Depends(get_current_user)):
+    """Получение баланса пользователя"""
     try:
         balance = db.get_balance(current_user.id)
         return balance.balances
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -115,6 +161,10 @@ async def create_order(
 ):
     """Создание новой заявки (рыночной или лимитной)"""
     try:
+        # Проверяем, что тикер существует
+        if not db.get_instrument(order_data.ticker):
+            raise HTTPException(status_code=404, detail="Instrument not found")
+            
         # Проверяем баланс пользователя
         balance = db.get_balance(current_user.id)
 
@@ -188,6 +238,8 @@ async def create_order(
             success=True,
             status=order.status
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -198,18 +250,14 @@ async def list_orders(
     ticker: Optional[str] = None,
     limit: int = Query(default=100, le=1000)
 ):
-    """Получение списка заявок пользователя с возможностью фильтрации"""
+    """Получение списка заявок пользователя"""
     try:
-        orders = db.get_user_orders(current_user.id)
-        
-        # Применяем фильтры
-        if status:
-            orders = [order for order in orders if order.status == status]
-        if ticker:
-            orders = [order for order in orders if order.body.ticker == ticker]
-        
-        # Ограничиваем количество результатов
-        return orders[:limit]
+        if ticker and not db.get_instrument(ticker):
+            raise HTTPException(status_code=404, detail="Instrument not found")
+            
+        return db.get_user_orders(current_user.id, status, ticker, limit)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -218,14 +266,16 @@ async def get_order(
     order_id: uuid.UUID,
     current_user: User = Depends(get_current_user)
 ):
-    """Получение информации о конкретной заявке"""
+    """Получение информации о заявке"""
     try:
         order = db.get_order(order_id)
         if not order:
-            raise HTTPException(status_code=404, detail="Заявка не найдена")
+            raise HTTPException(status_code=404, detail="Order not found")
         if order.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
+            raise HTTPException(status_code=403, detail="Not enough permissions")
         return order
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -238,10 +288,12 @@ async def get_order_executions(
     try:
         order = db.get_order(order_id)
         if not order:
-            raise HTTPException(status_code=404, detail="Заявка не найдена")
+            raise HTTPException(status_code=404, detail="Order not found")
         if order.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
+            raise HTTPException(status_code=403, detail="Not enough permissions")
         return db.get_order_executions(order_id)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -254,10 +306,12 @@ async def get_order_summary(
     try:
         order = db.get_order(order_id)
         if not order:
-            raise HTTPException(status_code=404, detail="Заявка не найдена")
+            raise HTTPException(status_code=404, detail="Order not found")
         if order.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Нет доступа к этой заявке")
+            raise HTTPException(status_code=403, detail="Not enough permissions")
         return db.get_order_execution_summary(order_id)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -280,6 +334,8 @@ async def delete_user(
         
         db.delete_user(user_id)
         return user
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -318,6 +374,12 @@ async def delete_instrument(
 ):
     """Удаление торгового инструмента"""
     try:
+        if not ticker.strip():
+            raise HTTPException(status_code=400, detail="Ticker cannot be empty")
+            
+        if not ticker.isalnum():
+            raise HTTPException(status_code=400, detail="Ticker must contain only letters and numbers")
+            
         if not db.get_instrument(ticker):
             raise HTTPException(status_code=404, detail="Instrument not found")
         
@@ -331,6 +393,8 @@ async def delete_instrument(
         
         db.delete_instrument(ticker)
         return Ok()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -344,9 +408,17 @@ async def deposit(
         user = db.get_user_by_id(request.user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+            
+        if request.amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be positive")
+            
+        if request.ticker == "USD" and not request.amount.is_integer():
+            raise HTTPException(status_code=400, detail="USD amount must be integer")
+            
         db.deposit_balance(request.user_id, request.ticker, request.amount)
         return Ok()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -360,7 +432,13 @@ async def withdraw_balance(
         user = db.get_user_by_id(request.user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+            
+        if request.amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be positive")
+            
+        if request.ticker == "USD" and not request.amount.is_integer():
+            raise HTTPException(status_code=400, detail="USD amount must be integer")
+            
         balance = db.get_balance(request.user_id)
         available_amount = balance.balances.get(request.ticker, 0)
         
@@ -372,6 +450,8 @@ async def withdraw_balance(
         
         db.withdraw_balance(request.user_id, request.ticker, request.amount)
         return Ok()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -387,9 +467,18 @@ async def list_instruments():
 async def get_orderbook(ticker: str, limit: int = Query(default=10, le=25)):
     """Получение стакана заявок по инструменту"""
     try:
+        if not ticker.strip():
+            raise HTTPException(status_code=400, detail="Ticker cannot be empty")
+            
+        if not ticker.isalnum():
+            raise HTTPException(status_code=400, detail="Ticker must contain only letters and numbers")
+            
         if not db.get_instrument(ticker):
             raise HTTPException(status_code=404, detail="Instrument not found")
+            
         return db.get_orderbook(ticker, limit)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -397,9 +486,18 @@ async def get_orderbook(ticker: str, limit: int = Query(default=10, le=25)):
 async def get_transactions(ticker: str):
     """Получение истории сделок по инструменту"""
     try:
+        if not ticker.strip():
+            raise HTTPException(status_code=400, detail="Ticker cannot be empty")
+            
+        if not ticker.isalnum():
+            raise HTTPException(status_code=400, detail="Ticker must contain only letters and numbers")
+            
         if not db.get_instrument(ticker):
             raise HTTPException(status_code=404, detail="Instrument not found")
+            
         return db.get_transactions(ticker)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
