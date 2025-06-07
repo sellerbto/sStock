@@ -1,4 +1,4 @@
-from pydantic import BaseModel, UUID4, EmailStr
+from pydantic import BaseModel, UUID4, EmailStr, Field, validator
 from typing import Optional, Dict, Union, List
 from enum import Enum
 import uuid
@@ -15,12 +15,18 @@ class UserRole(str, Enum):
     ADMIN = "ADMIN"
 
 class NewUser(BaseModel):
-    name: str
-    password: str
+    name: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=6, max_length=50)
+
+    @validator('name')
+    def name_alphanumeric(cls, v):
+        if not v.isalnum():
+            raise ValueError('Имя пользователя должно содержать только буквы и цифры')
+        return v
 
 class LoginUser(BaseModel):
-    name: str
-    password: str
+    name: str = Field(..., min_length=3, max_length=50)
+    password: str = Field(..., min_length=6, max_length=50)
 
 class User(BaseModel):
     id: UUID4
