@@ -516,3 +516,20 @@ def custom_openapi():
     return app.openapi_schema
 
 app.openapi = custom_openapi
+
+@app.delete("/api/v1/order/{order_id}", tags=["order"])
+async def cancel_order(order_id: uuid.UUID, current_user: User = Depends(get_current_user)):
+    """Отмена заявки пользователя"""
+    try:
+        order = db.get_order(order_id)
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
+        if order.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not enough permissions")
+        # Здесь предполагается, что отмена меняет статус заявки на CANCELLED
+        db.cancel_order(order_id)
+        return Ok()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
