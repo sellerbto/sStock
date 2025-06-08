@@ -157,17 +157,28 @@ async def create_order(
 ):
     """Создание новой заявки (рыночной или лимитной)"""
     try:
+        logger.info(f"Creating order - User: {current_user.name}, Type: {'Market' if isinstance(order_data, MarketOrderBody) else 'Limit'}")
+        logger.info(f"Order details - Direction: {order_data.direction}, Ticker: {order_data.ticker}, Quantity: {order_data.qty}")
+        if isinstance(order_data, LimitOrderBody):
+            logger.info(f"Limit order price: {order_data.price}")
+
         # Проверяем, что тикер существует
-        if not db.get_instrument(order_data.ticker):
+        instrument = db.get_instrument(order_data.ticker)
+        if not instrument:
+            logger.warning(f"Order creation failed - Instrument {order_data.ticker} not found")
             raise HTTPException(status_code=404, detail="Instrument not found")
+        logger.info(f"Instrument found: {instrument.ticker} - {instrument.name}")
             
         # Проверяем баланс пользователя
         balance = db.get_balance(current_user.id)
+        logger.info(f"User balance: {balance.balances}")
 
         if order_data.direction == Direction.SELL:
             # Проверяем достаточно ли токенов для продажи
             available_amount = balance.balances.get(order_data.ticker, 0)
+            logger.info(f"Checking sell balance - Available: {available_amount}, Required: {order_data.qty}")
             if available_amount < order_data.qty:
+                logger.warning(f"Order rejected - Insufficient balance for selling {order_data.ticker}")
                 return CreateOrderResponse(
                     order_id=uuid.uuid4(),
                     success=False,
@@ -178,7 +189,9 @@ async def create_order(
             # Для рыночной заявки на покупку проверяем наличие денег по лучшей цене
             if isinstance(order_data, MarketOrderBody):
                 best_price = db.get_best_price(order_data.ticker, Direction.BUY)
+                logger.info(f"Market order - Best price: {best_price}")
                 if best_price is None:
+                    logger.warning("Order rejected - No available offers for buying")
                     return CreateOrderResponse(
                         order_id=uuid.uuid4(),
                         success=False,
@@ -187,7 +200,9 @@ async def create_order(
                     )
                 required_usd = best_price * order_data.qty
                 available_usd = balance.balances.get("USD", 0)
+                logger.info(f"Checking buy balance - Required USD: {required_usd}, Available USD: {available_usd}")
                 if available_usd < required_usd:
+                    logger.warning(f"Order rejected - Insufficient USD balance")
                     return CreateOrderResponse(
                         order_id=uuid.uuid4(),
                         success=False,
@@ -197,7 +212,9 @@ async def create_order(
             else:  # LimitOrderBody
                 required_usd = order_data.price * order_data.qty
                 available_usd = balance.balances.get("USD", 0)
+                logger.info(f"Limit order - Required USD: {required_usd}, Available USD: {available_usd}")
                 if available_usd < required_usd:
+                    logger.warning(f"Order rejected - Insufficient USD balance for limit order")
                     return CreateOrderResponse(
                         order_id=uuid.uuid4(),
                         success=False,
@@ -207,6 +224,7 @@ async def create_order(
 
         order_id = uuid.uuid4()
         timestamp = datetime.now(UTC)
+        logger.info(f"Creating order with ID: {order_id}")
 
         if isinstance(order_data, MarketOrderBody):
             order = MarketOrder(
@@ -216,8 +234,10 @@ async def create_order(
                 timestamp=timestamp,
                 body=order_data
             )
+            logger.info("Adding market order to database")
             db.add_market_order(order)
             # Сразу пытаемся исполнить рыночную заявку
+            logger.info("Attempting to execute market order")
             db.execute_market_order(order)
         else:
             order = LimitOrder(
@@ -227,8 +247,10 @@ async def create_order(
                 timestamp=timestamp,
                 body=order_data
             )
+            logger.info("Adding limit order to database")
             db.add_limit_order(order)
 
+        logger.info(f"Order created successfully - ID: {order_id}, Status: {order.status}")
         return CreateOrderResponse(
             order_id=order_id,
             success=True,
@@ -237,6 +259,7 @@ async def create_order(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error creating order: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/order", tags=["order"])
