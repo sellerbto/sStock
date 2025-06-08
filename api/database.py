@@ -114,6 +114,11 @@ class Database:
         except DatabaseError as e:
             raise DatabaseError(f"Failed to get user by id: {str(e)}")
 
+#                   id                  | name  | role  |                 api_key
+# --------------------------------------+-------+-------+------------------------------------------
+#  fb156fad-f405-4797-a2b8-906a3aba5bca | admin | ADMIN | key-81ce43a7-14fd-45de-9b99-82218228935a
+
+
     def delete_user(self, user_id: UUID) -> None:
         """Удаление пользователя"""
         try:
@@ -236,10 +241,10 @@ class Database:
             with self.get_session() as session:
                 result = session.query(InstrumentModel).filter(
                     InstrumentModel.ticker == ticker.upper()
-                ).update({"is_active": False})
+                ).delete()
                 
                 if result == 0:
-                    raise DatabaseNotFoundError(f"Instrument {ticker} not found")
+                    raise DatabaseNotFoundError(f"Instrument with ticker {ticker} not found")
         except DatabaseError as e:
             raise DatabaseError(f"Failed to delete instrument: {str(e)}")
 
