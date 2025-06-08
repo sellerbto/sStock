@@ -263,23 +263,23 @@ class Database:
         with self.get_session() as session:
             db_order = OrderModel(
                 id=order.id,
-                user_id=order.user_id,
+                user_id=str(order.user_id),
                 ticker=order.body.ticker,
                 direction=order.body.direction,
                 quantity=order.body.qty,
-                price=None,  # Рыночная заявка
+                price=None,  # Для рыночных заявок цена не указывается
                 status=order.status
             )
             session.add(db_order)
-            # Пытаемся исполнить рыночную заявку
-            self.execute_market_order(order)
+            # Сразу пытаемся исполнить рыночную заявку
+            self.execute_market_order_internal(session, db_order)
 
     def add_limit_order(self, order: LimitOrder) -> None:
         """Добавление лимитной заявки"""
         with self.get_session() as session:
             db_order = OrderModel(
                 id=order.id,
-                user_id=order.user_id,
+                user_id=str(order.user_id),
                 ticker=order.body.ticker,
                 direction=order.body.direction,
                 quantity=order.body.qty,
@@ -287,91 +287,86 @@ class Database:
                 status=order.status
             )
             session.add(db_order)
-        # Пытаемся исполнить лимитную заявку
+            # Пытаемся исполнить лимитную заявку
             self.execute_limit_order(session, db_order)
 
     def execute_market_order(self, order: MarketOrder) -> None:
-        """Публичный метод для исполнения рыночной заявки"""
+        """Исполнение рыночной заявки"""
         with self.get_session() as session:
-            db_order = session.query(OrderModel).filter(OrderModel.id == str(order.id)).first()
-            if db_order:
-                self.execute_market_order_internal(session, db_order)
+            db_order = session.query(OrderModel).filter(OrderModel.id == order.id).first()
+            if not db_order:
+                raise DatabaseNotFoundError(f"Order {order.id} not found")
+            self.execute_market_order_internal(session, db_order)
 
     def execute_market_order_internal(self, session: Session, order: OrderModel) -> None:
-        """Исполнение рыночной заявки (внутренний метод)"""
-        # Получаем все активные лимитные заявки для этого тикера
-        limit_orders = session.query(OrderModel).with_for_update().filter(
-            and_(
-                OrderModel.ticker == order.ticker,
-                OrderModel.direction != order.direction,
-                OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED])
-            )
-        ).order_by(
-            OrderModel.price.asc() if order.direction == Direction.BUY else OrderModel.price.desc()
-        ).all()
-        
-        remaining_qty = order.quantity
-        
-        for limit_order in limit_orders:
-            if remaining_qty == 0:
-                break
-                
-            available_qty = limit_order.quantity - self.get_filled_quantity(session, limit_order.id)
-            execute_qty = min(remaining_qty, available_qty)
-            
-            # Исполняем часть заявки
-            self._execute_orders(session, order, limit_order, execute_qty)
-            
-            remaining_qty -= execute_qty
-        
-        # Обновляем статус рыночной заявки
-        if remaining_qty == 0:
-            order.status = OrderStatus.EXECUTED
-        elif remaining_qty < order.quantity:
-            order.status = OrderStatus.PARTIALLY_EXECUTED
-
-    def execute_limit_order(self, session: Session, order: OrderModel) -> None:
-        """Исполнение лимитной заявки"""
-        # Получаем все активные лимитные заявки для этого тикера
-        limit_orders = session.query(OrderModel).with_for_update().filter(
+        """Внутренний метод исполнения рыночной заявки"""
+        # Получаем все активные лимитные заявки в противоположном направлении
+        limit_orders = session.query(OrderModel).filter(
             and_(
                 OrderModel.ticker == order.ticker,
                 OrderModel.direction != order.direction,
                 OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
                 OrderModel.id != order.id
             )
-        )
-        
-        # Фильтруем по цене
-        if order.direction == Direction.BUY:
-            limit_orders = limit_orders.filter(OrderModel.price <= order.price)
-            limit_orders = limit_orders.order_by(OrderModel.price.asc())
-        else:
-            limit_orders = limit_orders.filter(OrderModel.price >= order.price)
-            limit_orders = limit_orders.order_by(OrderModel.price.desc())
-        
-        limit_orders = limit_orders.all()
-        
+        ).order_by(
+            OrderModel.price.desc() if order.direction == Direction.BUY else OrderModel.price.asc()
+        ).with_for_update().all()
+
         remaining_qty = order.quantity
-        
         for limit_order in limit_orders:
-            if remaining_qty == 0:
+            if remaining_qty <= 0:
                 break
-                
-            available_qty = limit_order.quantity - self.get_filled_quantity(session, limit_order.id)
-            execute_qty = min(remaining_qty, available_qty)
+
+            # Определяем количество для исполнения
+            qty = min(remaining_qty, limit_order.quantity)
             
-            # Исполняем часть заявки
-            self._execute_orders(session, order, limit_order, execute_qty)
+            # Исполняем заявки
+            self._execute_orders(session, order, limit_order, qty)
             
-            remaining_qty -= execute_qty
-        
+            remaining_qty -= qty
+
+        # Обновляем статус рыночной заявки
+        if remaining_qty == 0:
+            order.status = OrderStatus.EXECUTED
+        else:
+            order.status = OrderStatus.REJECTED
+            order.rejection_reason = "Не удалось исполнить рыночную заявку полностью"
+
+    def execute_limit_order(self, session: Session, order: OrderModel) -> None:
+        """Исполнение лимитной заявки"""
+        # Получаем все активные лимитные заявки в противоположном направлении
+        limit_orders = session.query(OrderModel).filter(
+            and_(
+                OrderModel.ticker == order.ticker,
+                OrderModel.direction != order.direction,
+                OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+                OrderModel.id != order.id,
+                OrderModel.price >= order.price if order.direction == Direction.SELL else OrderModel.price <= order.price
+            )
+        ).order_by(
+            OrderModel.price.desc() if order.direction == Direction.BUY else OrderModel.price.asc()
+        ).with_for_update().all()
+
+        remaining_qty = order.quantity
+        for limit_order in limit_orders:
+            if remaining_qty <= 0:
+                break
+
+            # Определяем количество для исполнения
+            qty = min(remaining_qty, limit_order.quantity)
+            
+            # Исполняем заявки
+            self._execute_orders(session, order, limit_order, qty)
+            
+            remaining_qty -= qty
+
         # Обновляем статус лимитной заявки
         if remaining_qty == 0:
             order.status = OrderStatus.EXECUTED
         elif remaining_qty < order.quantity:
             order.status = OrderStatus.PARTIALLY_EXECUTED
-        
+            order.quantity = remaining_qty
+
     def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
         """Исполнение заявок между собой"""
         price = order2.price  # Используем цену лимитной заявки
@@ -472,34 +467,36 @@ class Database:
         seller_instrument_balance.amount -= qty
 
     def get_filled_quantity(self, session: Session, order_id: UUID) -> int:
-        """Получение количества исполненных единиц для заявки"""
-        result = session.query(func.sum(ExecutionModel.quantity)).filter(
+        """Получение количества исполненных единиц заявки"""
+        return session.query(func.sum(ExecutionModel.quantity)).filter(
             ExecutionModel.order_id == order_id
-        ).scalar()
-        return result or 0
+        ).scalar() or 0
 
     def get_order(self, order_id: UUID) -> Optional[Union[MarketOrder, LimitOrder]]:
         """Получение заявки по ID"""
         with self.get_session() as session:
-            db_order = session.query(OrderModel).filter(OrderModel.id == str(order_id)).first()
+            db_order = session.query(OrderModel).filter(OrderModel.id == order_id).first()
             if not db_order:
                 return None
-                
+
             if db_order.price is None:
+                # Рыночная заявка
                 return MarketOrder(
                     id=db_order.id,
+                    status=db_order.status,
                     user_id=db_order.user_id,
                     timestamp=db_order.created_at,
                     body=MarketOrderBody(
                         direction=db_order.direction,
                         ticker=db_order.ticker,
                         qty=db_order.quantity
-                    ),
-                    status=db_order.status
+                    )
                 )
             else:
+                # Лимитная заявка
                 return LimitOrder(
                     id=db_order.id,
+                    status=db_order.status,
                     user_id=db_order.user_id,
                     timestamp=db_order.created_at,
                     body=LimitOrderBody(
@@ -508,7 +505,7 @@ class Database:
                         qty=db_order.quantity,
                         price=db_order.price
                     ),
-                    status=db_order.status
+                    filled=self.get_filled_quantity(session, db_order.id)
                 )
 
     def get_user_orders(self, user_id: UUID) -> List[Union[MarketOrder, LimitOrder]]:
@@ -579,11 +576,12 @@ class Database:
             ]
 
     def get_order_executions(self, order_id: UUID) -> List[ExecutionDetails]:
-        """Получение всех исполнений для заявки"""
+        """Получение истории исполнений заявки"""
         with self.get_session() as session:
-            db_executions = session.query(ExecutionModel).filter(
-                ExecutionModel.order_id == str(order_id)
+            executions = session.query(ExecutionModel).filter(
+                ExecutionModel.order_id == order_id
             ).all()
+            
             return [
                 ExecutionDetails(
                     execution_id=execution.id,
@@ -592,38 +590,26 @@ class Database:
                     price=execution.price,
                     counterparty_order_id=execution.counterparty_order_id
                 )
-                for execution in db_executions
+                for execution in executions
             ]
 
     def get_order_execution_summary(self, order_id: UUID) -> Optional[OrderExecutionSummary]:
-        """Получение сводки исполнения для заявки"""
+        """Получение сводки по исполнению заявки"""
         with self.get_session() as session:
-            db_executions = session.query(ExecutionModel).filter(
-                ExecutionModel.order_id == str(order_id)
-            ).all()
-            
-            if not db_executions:
+            executions = self.get_order_executions(order_id)
+            if not executions:
                 return None
-                
-            total_filled = sum(execution.quantity for execution in db_executions)
-            total_value = sum(execution.quantity * execution.price for execution in db_executions)
+
+            total_filled = sum(execution.quantity for execution in executions)
+            total_value = sum(execution.quantity * execution.price for execution in executions)
             average_price = total_value / total_filled if total_filled > 0 else 0
-            last_execution_time = max(execution.executed_at for execution in db_executions)
-            
+            last_execution_time = max(execution.timestamp for execution in executions)
+
             return OrderExecutionSummary(
                 total_filled=total_filled,
                 average_price=average_price,
                 last_execution_time=last_execution_time,
-                executions=[
-                    ExecutionDetails(
-                        execution_id=execution.id,
-                        timestamp=execution.executed_at,
-                        quantity=execution.quantity,
-                        price=execution.price,
-                        counterparty_order_id=execution.counterparty_order_id
-                    )
-                    for execution in db_executions
-                ]
+                executions=executions
             )
 
     def get_orderbook(self, ticker: str, limit: int = 10) -> L2OrderBook:

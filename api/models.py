@@ -194,7 +194,7 @@ class BalanceModel(Base):
 class OrderModel(Base):
     __tablename__ = "orders"
     
-    id = Column(String, primary_key=True)
+    id = Column(UUID, primary_key=True)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     ticker = Column(String, nullable=False)
     direction = Column(SQLEnum(Direction), nullable=False)
@@ -223,8 +223,8 @@ class ExecutionModel(Base):
     __tablename__ = "executions"
     
     id = Column(Integer, primary_key=True)
-    order_id = Column(String, ForeignKey("orders.id"), nullable=False)
-    counterparty_order_id = Column(String, ForeignKey("orders.id"), nullable=False)
+    order_id = Column(UUID, ForeignKey("orders.id"), nullable=False)
+    counterparty_order_id = Column(UUID, ForeignKey("orders.id"), nullable=False)
     quantity = Column(Integer, nullable=False)
     price = Column(Numeric, nullable=False)
     executed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
