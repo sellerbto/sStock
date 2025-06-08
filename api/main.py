@@ -19,6 +19,8 @@ from typing import Union, List, Optional
 from fastapi.openapi.utils import get_openapi
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
+import logging
+import time
 # from dotenv import load_dotenv
 
 # Load environment variables
@@ -41,6 +43,31 @@ app.add_middleware(
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="api/static"), name="static")
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    # Получаем API ключ из заголовка
+    api_key = request.headers.get("Authorization", "").replace("TOKEN ", "")
+    
+    # Логируем информацию о запросе
+    logger.info(f"Request: {request.method} {request.url.path} - API Key: {api_key}")
+    
+    # Замеряем время выполнения
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    
+    # Логируем результат
+    logger.info(f"Response: {request.method} {request.url.path} - Status: {response.status_code} - Time: {process_time:.2f}s")
+    
+    return response
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
@@ -320,25 +347,33 @@ async def add_instrument(
 ):
     """Добавление нового торгового инструмента"""
     try:
+        logger.info(f"Attempting to add instrument: {instrument.ticker} by user {current_user.name}")
+        
         # Проверяем, что тикер и название не пустые
         if not instrument.ticker.strip():
+            logger.warning(f"Empty ticker provided by user {current_user.name}")
             raise HTTPException(status_code=400, detail="Ticker cannot be empty")
         if not instrument.name.strip():
+            logger.warning(f"Empty name provided for ticker {instrument.ticker} by user {current_user.name}")
             raise HTTPException(status_code=400, detail="Name cannot be empty")
             
         # Проверяем, что тикер содержит только буквы и цифры
         if not instrument.ticker.isalnum():
+            logger.warning(f"Invalid ticker format: {instrument.ticker} by user {current_user.name}")
             raise HTTPException(status_code=400, detail="Ticker must contain only letters and numbers")
             
         # Проверяем, что инструмент еще не существует
         if db.get_instrument(instrument.ticker):
+            logger.warning(f"Attempt to add existing instrument: {instrument.ticker} by user {current_user.name}")
             raise HTTPException(status_code=400, detail="Instrument already exists")
         
         db.add_instrument(instrument)
+        logger.info(f"Successfully added instrument: {instrument.ticker} by user {current_user.name}")
         return Ok()
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error adding instrument {instrument.ticker} by user {current_user.name}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/v1/admin/instrument/{ticker}", response_model=Ok, tags=["admin"])
