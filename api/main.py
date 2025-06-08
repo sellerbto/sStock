@@ -19,10 +19,10 @@ from typing import Union, List, Optional
 from fastapi.openapi.utils import get_openapi
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 
 # Load environment variables
-load_dotenv()
+# load_dotenv()
 
 app = FastAPI(
     title="Stock Exchange",
@@ -81,13 +81,6 @@ async def general_exception_handler(request: Request, exc: Exception):
         content={"detail": str(exc)}
     )
 
-@app.get("/")
-async def root():
-    try:
-        return FileResponse("api/static/index.html", media_type="text/html")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.post("/api/v1/public/register", response_model=User)
 async def register(new_user: NewUser):
     """Регистрация нового пользователя"""
@@ -137,11 +130,6 @@ async def login(login_data: LoginUser):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/me", response_model=User)
-async def get_me(current_user: User = Depends(get_current_user)):
-    """Получение информации о текущем пользователе"""
-    return current_user
 
 @app.get("/api/v1/balance")
 async def get_balances(current_user: User = Depends(get_current_user)):
