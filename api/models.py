@@ -15,13 +15,7 @@ class UserRole(str, Enum):
     ADMIN = "ADMIN"
 
 class NewUser(BaseModel):
-    name: str = Field(..., min_length=3, max_length=50)
-
-    @validator('name')
-    def name_alphanumeric(cls, v):
-        if not v.isalnum():
-            raise ValueError('Имя пользователя должно содержать только буквы и цифры')
-        return v
+    name: str
 
 class LoginUser(BaseModel):
     name: str = Field(..., min_length=3, max_length=50)

@@ -112,24 +112,17 @@ async def general_exception_handler(request: Request, exc: Exception):
 async def register(new_user: NewUser):
     """Регистрация нового пользователя"""
     try:
+        # Логируем входящие данные
+        logger.info(f"Registration attempt - Username: '{new_user.name}', Length: {len(new_user.name)}")
+        logger.info(f"Username contains ASCII only: {new_user.name.isascii()}")
+        logger.info(f"Username is alphanumeric: {new_user.name.isalnum()}")
+        logger.info(f"Username contains spaces: {' ' in new_user.name}")
+        logger.info(f"Username contains special chars: {not all(c.isalnum() for c in new_user.name)}")
+
         # Проверяем, не существует ли уже пользователь с таким именем
         if db.get_user_by_name(new_user.name):
+            logger.warning(f"Registration failed - Username '{new_user.name}' already exists")
             raise HTTPException(status_code=400, detail="User with this name already exists")
-            
-        if not new_user.name.strip():
-            raise HTTPException(status_code=400, detail="Username cannot be empty")
-            
-        if not new_user.name.isascii():
-            raise HTTPException(status_code=400, detail="Username must contain only ASCII characters")
-            
-        if not new_user.name.isalnum():
-            raise HTTPException(status_code=400, detail="Username must contain only letters and numbers")
-            
-        if len(new_user.name) < 3:
-            raise HTTPException(status_code=400, detail="Username must be at least 3 characters long")
-            
-        if len(new_user.name) > 50:
-            raise HTTPException(status_code=400, detail="Username must be at most 50 characters long")
 
         user = User(
             id=uuid.uuid4(),
@@ -138,10 +131,12 @@ async def register(new_user: NewUser):
             api_key=f"key-{uuid.uuid4()}"
         )
         db.add_user(user)
+        logger.info(f"User registered successfully - ID: {user.id}, Name: {user.name}")
         return user
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Registration error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/balance", tags=["balance"])
