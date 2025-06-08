@@ -23,7 +23,7 @@ class LoginUser(BaseModel):
 
 class User(BaseModel):
     id: UUID4
-    name: str = Field(..., min_length=3, max_length=50)
+    name: str
     role: UserRole
     api_key: str
 
