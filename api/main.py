@@ -81,7 +81,7 @@ async def general_exception_handler(request: Request, exc: Exception):
         content={"detail": str(exc)}
     )
 
-@app.post("/api/v1/public/register", response_model=User)
+@app.post("/api/v1/public/register", response_model=User, tags=["public"])
 async def register(new_user: NewUser):
     """Регистрация нового пользователя"""
     try:
@@ -112,26 +112,26 @@ async def register(new_user: NewUser):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/public/login", response_model=User)
-async def login(login_data: LoginUser):
-    """Вход в систему"""
-    try:
-        if not login_data.name.strip():
-            raise HTTPException(status_code=400, detail="Username cannot be empty")
+# @app.post("/api/v1/public/login", response_model=User)
+# async def login(login_data: LoginUser):
+#     """Вход в систему"""
+#     try:
+#         if not login_data.name.strip():
+#             raise HTTPException(status_code=400, detail="Username cannot be empty")
             
-        if not login_data.password:
-            raise HTTPException(status_code=400, detail="Password cannot be empty")
+#         if not login_data.password:
+#             raise HTTPException(status_code=400, detail="Password cannot be empty")
             
-        user = db.get_user_by_name(login_data.name)
-        if not user or not user.check_password(login_data.password):
-            raise HTTPException(status_code=401, detail="Invalid username or password")
-        return user
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+#         user = db.get_user_by_name(login_data.name)
+#         if not user or not user.check_password(login_data.password):
+#             raise HTTPException(status_code=401, detail="Invalid username or password")
+#         return user
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/balance")
+@app.get("/api/v1/balance", tags=["balance"])
 async def get_balances(current_user: User = Depends(get_current_user)):
     """Получение баланса пользователя"""
     try:
@@ -142,7 +142,7 @@ async def get_balances(current_user: User = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/order", response_model=CreateOrderResponse)
+@app.post("/api/v1/order", response_model=CreateOrderResponse, tags=["order"])
 async def create_order(
     order_data: Union[MarketOrderBody, LimitOrderBody],
     current_user: User = Depends(get_current_user)
@@ -231,7 +231,7 @@ async def create_order(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/order")
+@app.get("/api/v1/order", tags=["order"])
 async def list_orders(
     current_user: User = Depends(get_current_user),
     status: Optional[OrderStatus] = None,
@@ -249,7 +249,7 @@ async def list_orders(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/order/{order_id}", response_model=Union[MarketOrder, LimitOrder])
+@app.get("/api/v1/order/{order_id}", response_model=Union[MarketOrder, LimitOrder], tags=["order"])
 async def get_order(
     order_id: uuid.UUID,
     current_user: User = Depends(get_current_user)
@@ -267,45 +267,45 @@ async def get_order(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/order/{order_id}/executions")
-async def get_order_executions(
-    order_id: uuid.UUID,
-    current_user: User = Depends(get_current_user)
-) -> List[ExecutionDetails]:
-    """Получение истории исполнений заявки"""
-    try:
-        order = db.get_order(order_id)
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found")
-        if order.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Not enough permissions")
-        return db.get_order_executions(order_id)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# @app.get("/api/v1/order/{order_id}/executions")
+# async def get_order_executions(
+#     order_id: uuid.UUID,
+#     current_user: User = Depends(get_current_user)
+# ) -> List[ExecutionDetails]:
+#     """Получение истории исполнений заявки"""
+#     try:
+#         order = db.get_order(order_id)
+#         if not order:
+#             raise HTTPException(status_code=404, detail="Order not found")
+#         if order.user_id != current_user.id:
+#             raise HTTPException(status_code=403, detail="Not enough permissions")
+#         return db.get_order_executions(order_id)
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/order/{order_id}/summary")
-async def get_order_summary(
-    order_id: uuid.UUID,
-    current_user: User = Depends(get_current_user)
-) -> Optional[OrderExecutionSummary]:
-    """Получение сводки по исполнению заявки"""
-    try:
-        order = db.get_order(order_id)
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found")
-        if order.user_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Not enough permissions")
-        return db.get_order_execution_summary(order_id)
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# @app.get("/api/v1/order/{order_id}/summary")
+# async def get_order_summary(
+#     order_id: uuid.UUID,
+#     current_user: User = Depends(get_current_user)
+# ) -> Optional[OrderExecutionSummary]:
+#     """Получение сводки по исполнению заявки"""
+#     try:
+#         order = db.get_order(order_id)
+#         if not order:
+#             raise HTTPException(status_code=404, detail="Order not found")
+#         if order.user_id != current_user.id:
+#             raise HTTPException(status_code=403, detail="Not enough permissions")
+#         return db.get_order_execution_summary(order_id)
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 # Административные эндпоинты
 
-@app.delete("/api/v1/admin/user/{user_id}", response_model=User)
+@app.delete("/api/v1/admin/user/{user_id}", response_model=User, tags=["admin", "user"])
 async def delete_user(
     user_id: uuid.UUID,
     current_user: User = Depends(get_admin_user)
@@ -327,7 +327,7 @@ async def delete_user(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/admin/instrument", response_model=Ok)
+@app.post("/api/v1/admin/instrument", response_model=Ok, tags=["admin"])
 async def add_instrument(
     instrument: Instrument,
     current_user: User = Depends(get_admin_user)
@@ -355,7 +355,7 @@ async def add_instrument(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/v1/admin/instrument/{ticker}", response_model=Ok)
+@app.delete("/api/v1/admin/instrument/{ticker}", response_model=Ok, tags=["admin"])
 async def delete_instrument(
     ticker: str,
     current_user: User = Depends(get_admin_user)
@@ -386,7 +386,7 @@ async def delete_instrument(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/admin/balance/deposit", response_model=Ok)
+@app.post("/api/v1/admin/balance/deposit", response_model=Ok, tags=["balance", "admin"])
 async def deposit(
     request: DepositRequest,
     current_user: User = Depends(get_admin_user)
@@ -410,7 +410,7 @@ async def deposit(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/admin/balance/withdraw", response_model=Ok)
+@app.post("/api/v1/admin/balance/withdraw", response_model=Ok, tags=["balance", "admin"])
 async def withdraw_balance(
     request: WithdrawRequest,
     current_user: User = Depends(get_admin_user)
@@ -443,7 +443,7 @@ async def withdraw_balance(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/public/instrument")
+@app.get("/api/v1/public/instrument", tags=["public"])
 async def list_instruments():
     """Получение списка всех торговых инструментов"""
     try:
@@ -451,7 +451,7 @@ async def list_instruments():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/public/orderbook/{ticker}", response_model=L2OrderBook)
+@app.get("/api/v1/public/orderbook/{ticker}", response_model=L2OrderBook, tags=["public"])
 async def get_orderbook(ticker: str, limit: int = Query(default=10, le=25)):
     """Получение стакана заявок по инструменту"""
     try:
@@ -470,7 +470,7 @@ async def get_orderbook(ticker: str, limit: int = Query(default=10, le=25)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/public/transactions/{ticker}")
+@app.get("/api/v1/public/transactions/{ticker}", tags=["public"])
 async def get_transactions(ticker: str):
     """Получение истории сделок по инструменту"""
     try:
