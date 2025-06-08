@@ -11,6 +11,9 @@ from .models import (
 )
 from uuid import UUID, uuid4
 from datetime import datetime, UTC
+import logging
+
+logger = logging.getLogger(__name__)
 
 class DatabaseError(Exception):
     """Базовый класс для ошибок базы данных"""
@@ -239,13 +242,20 @@ class Database:
         """Удаление инструмента"""
         try:
             with self.get_session() as session:
+                logger.info(f"Attempting to delete instrument with ticker: {ticker.upper()}")
                 result = session.query(InstrumentModel).filter(
                     InstrumentModel.ticker == ticker.upper()
                 ).delete()
+                logger.info(f"Delete result: {result}")
                 
                 if result == 0:
+                    logger.warning(f"No instrument found with ticker: {ticker.upper()}")
                     raise DatabaseNotFoundError(f"Instrument with ticker {ticker} not found")
+                
+                session.commit()
+                logger.info(f"Successfully deleted instrument with ticker: {ticker.upper()}")
         except DatabaseError as e:
+            logger.error(f"Error deleting instrument: {str(e)}")
             raise DatabaseError(f"Failed to delete instrument: {str(e)}")
 
     def add_market_order(self, order: MarketOrder) -> None:
