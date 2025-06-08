@@ -8,7 +8,7 @@ from .models import (
     CreateOrderResponse, OrderStatus, Direction,
     ExecutionDetails, OrderExecutionSummary,
     Instrument, Ok, DepositRequest, WithdrawRequest,
-    L2OrderBook, Level
+    L2OrderBook, UserRole
 )
 from .database import db, Database, DatabaseError, DatabaseIntegrityError, DatabaseNotFoundError
 from .auth import get_current_user, get_admin_user
@@ -92,6 +92,9 @@ async def register(new_user: NewUser):
         if not new_user.name.strip():
             raise HTTPException(status_code=400, detail="Username cannot be empty")
             
+        if not new_user.name.isascii():
+            raise HTTPException(status_code=400, detail="Username must contain only ASCII characters")
+            
         if not new_user.name.isalnum():
             raise HTTPException(status_code=400, detail="Username must contain only letters and numbers")
             
@@ -100,36 +103,19 @@ async def register(new_user: NewUser):
             
         if len(new_user.name) > 50:
             raise HTTPException(status_code=400, detail="Username must be at most 50 characters long")
-            
-        if len(new_user.password) < 6:
-            raise HTTPException(status_code=400, detail="Password must be at least 6 characters long")
 
-        user = User.create(name=new_user.name, password=new_user.password)
+        user = User(
+            id=uuid.uuid4(),
+            name=new_user.name,
+            role=UserRole.USER,
+            api_key=f"key-{uuid.uuid4()}"
+        )
         db.add_user(user)
         return user
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-# @app.post("/api/v1/public/login", response_model=User)
-# async def login(login_data: LoginUser):
-#     """Вход в систему"""
-#     try:
-#         if not login_data.name.strip():
-#             raise HTTPException(status_code=400, detail="Username cannot be empty")
-            
-#         if not login_data.password:
-#             raise HTTPException(status_code=400, detail="Password cannot be empty")
-            
-#         user = db.get_user_by_name(login_data.name)
-#         if not user or not user.check_password(login_data.password):
-#             raise HTTPException(status_code=401, detail="Invalid username or password")
-#         return user
-#     except HTTPException:
-#         raise
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/balance", tags=["balance"])
 async def get_balances(current_user: User = Depends(get_current_user)):

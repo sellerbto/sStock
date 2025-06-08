@@ -16,7 +16,6 @@ class UserRole(str, Enum):
 
 class NewUser(BaseModel):
     name: str = Field(..., min_length=3, max_length=50)
-    password: str = Field(..., min_length=6, max_length=50)
 
     @validator('name')
     def name_alphanumeric(cls, v):
@@ -26,29 +25,13 @@ class NewUser(BaseModel):
 
 class LoginUser(BaseModel):
     name: str = Field(..., min_length=3, max_length=50)
-    password: str = Field(..., min_length=6, max_length=50)
+    # password: str = Field(..., min_length=6, max_length=50)
 
 class User(BaseModel):
     id: UUID4
     name: str = Field(..., min_length=3, max_length=50)
     role: UserRole
     api_key: str
-    password_hash: str
-
-    @classmethod
-    def create(cls, name: str, password: str, role: UserRole = UserRole.USER) -> "User":
-        # Генерируем хеш пароля
-        password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-        return cls(
-            id=uuid.uuid4(),
-            name=name,
-            role=role,
-            api_key=str(uuid.uuid4()),  # Генерируем чистый UUID
-            password_hash=password_hash.decode('utf-8')
-        )
-
-    def check_password(self, password: str) -> bool:
-        return bcrypt.checkpw(password.encode('utf-8'), self.password_hash.encode('utf-8'))
 
 class Balance(BaseModel):
     user_id: UUID4
@@ -194,7 +177,6 @@ class UserModel(Base):
     name = Column(String, unique=True, nullable=False)
     role = Column(SQLEnum(UserRole), nullable=False)
     api_key = Column(String, unique=True, nullable=False)
-    password_hash = Column(String, nullable=False)
     
     # Добавляем связь с балансами
     balances = relationship("BalanceModel", back_populates="user", cascade="all, delete-orphan")

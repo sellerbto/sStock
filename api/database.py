@@ -59,7 +59,6 @@ class Database:
                     name=user.name,
                     role=user.role,
                     api_key=user.api_key,
-                    password_hash=user.password_hash
                 )
                 session.add(db_user)
         except DatabaseIntegrityError as e:
@@ -79,7 +78,6 @@ class Database:
                     name=db_user.name,
                     role=db_user.role,
                     api_key=db_user.api_key,
-                    password_hash=db_user.password_hash
                 )
         except DatabaseError as e:
             raise DatabaseError(f"Failed to get user by api_key: {str(e)}")
@@ -96,7 +94,6 @@ class Database:
                     name=db_user.name,
                     role=db_user.role,
                     api_key=db_user.api_key,
-                    password_hash=db_user.password_hash
                 )
         except DatabaseError as e:
             raise DatabaseError(f"Failed to get user by name: {str(e)}")
@@ -113,7 +110,6 @@ class Database:
                     name=db_user.name,
                     role=db_user.role,
                     api_key=db_user.api_key,
-                    password_hash=db_user.password_hash
                 )
         except DatabaseError as e:
             raise DatabaseError(f"Failed to get user by id: {str(e)}")
