@@ -157,43 +157,53 @@ async def create_order(
 ):
     """Создание новой заявки"""
     try:
-        logger.info(f"Creating order - User: {current_user.name}, Type: {'Limit' if isinstance(order, LimitOrder) else 'Market'}")
-        logger.info(f"Order details - Direction: {order.body.direction}, Ticker: {order.body.ticker}, Quantity: {order.body.qty}")
+        logger.info(f"=== Starting POST /api/v1/order request ===")
+        logger.info(f"User: {current_user.name} (ID: {current_user.id})")
+        logger.info(f"Order data: {order.body.dict()}")
         
-        if isinstance(order, LimitOrder):
-            logger.info(f"Limit order price: {order.body.price}")
-            
         # Проверяем существование инструмента
-        if not db.get_instrument(order.body.ticker):
-            logger.warning(f"Order rejected - Instrument {order.body.ticker} not found")
-            raise HTTPException(status_code=404, detail="Instrument not found")
-        logger.info(f"Instrument found: {order.body.ticker} - {db.get_instrument(order.body.ticker).name}")
-        
+        instrument = db.get_instrument(order.body.ticker)
+        if not instrument:
+            logger.error(f"Instrument not found: {order.body.ticker}")
+            raise HTTPException(status_code=404, detail=f"Instrument {order.body.ticker} not found")
+        logger.info(f"Instrument found: {instrument.ticker} - {instrument.name}")
+
         # Получаем баланс пользователя
-        user_balance = db.get_user_balance(current_user.id)
-        logger.info(f"User balance: {user_balance}")
-        
-        # Проверяем достаточность средств
+        balance = db.get_user_balance(current_user.id)
+        logger.info(f"User balance: {balance}")
+
+        # Проверяем баланс
         if order.body.direction == Direction.SELL:
-            available = user_balance.get(order.body.ticker, 0)
-            logger.info(f"Checking sell balance - Available: {available}, Required: {order.body.qty}")
-            if available < order.body.qty:
-                logger.warning(f"Order rejected - Insufficient {order.body.ticker} balance")
-                raise HTTPException(status_code=400, detail=f"Insufficient {order.body.ticker} balance")
+            if order.body.ticker not in balance or balance[order.body.ticker] < order.body.qty:
+                logger.warning(f"Insufficient balance for sell order. Required {order.body.ticker}: {order.body.qty}, Available: {balance.get(order.body.ticker, 0)}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Insufficient balance. Required {order.body.ticker}: {order.body.qty}, Available: {balance.get(order.body.ticker, 0)}"
+                )
         else:  # BUY
             if isinstance(order, LimitOrder):
                 required_rub = order.body.price * order.body.qty
-                available_rub = user_balance.get('RUB', 0)
-                logger.info(f"Limit order - Required RUB: {required_rub}, Available RUB: {available_rub}")
-                if available_rub < required_rub:
-                    logger.warning(f"Order rejected - Insufficient RUB balance for limit order")
-                    raise HTTPException(status_code=400, detail="Insufficient RUB balance for limit order")
+                if "RUB" not in balance or balance["RUB"] < required_rub:
+                    logger.warning(f"Insufficient RUB balance for limit buy. Required RUB: {required_rub}, Available: {balance.get('RUB', 0)}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Insufficient RUB balance. Required: {required_rub}, Available: {balance.get('RUB', 0)}"
+                    )
             else:  # Market order
-                available_rub = user_balance.get('RUB', 0)
-                logger.info(f"Market order - Available RUB: {available_rub}")
-                if available_rub <= 0:
-                    logger.warning(f"Order rejected - No RUB balance for market order")
-                    raise HTTPException(status_code=400, detail="No RUB balance for market order")
+                best_price = db.get_best_price(order.body.ticker, Direction.BUY)
+                if best_price is None:
+                    logger.warning(f"No active sell orders found for {order.body.ticker}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No active sell orders found for {order.body.ticker}"
+                    )
+                required_rub = best_price * order.body.qty
+                if "RUB" not in balance or balance["RUB"] < required_rub:
+                    logger.warning(f"Insufficient RUB balance for market buy. Required RUB: {required_rub}, Available: {balance.get('RUB', 0)}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Insufficient RUB balance. Required: {required_rub}, Available: {balance.get('RUB', 0)}"
+                    )
         
         # Создаем заявку
         order_id = uuid.uuid4()
