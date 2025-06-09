@@ -413,21 +413,31 @@ async def deposit(
 ):
     """Пополнение баланса пользователя"""
     try:
+        logger.info(f"=== Starting POST /api/v1/admin/balance/deposit request ===")
+        logger.info(f"Admin: {current_user.username} (ID: {current_user.id})")
+        logger.info(f"Deposit request: {request.dict()}")
+        
         user = db.get_user_by_id(request.user_id)
         if not user:
+            logger.error(f"User not found: {request.user_id}")
             raise HTTPException(status_code=404, detail="User not found")
             
         if request.amount <= 0:
+            logger.warning(f"Invalid amount: {request.amount}")
             raise HTTPException(status_code=400, detail="Amount must be positive")
             
-        if request.ticker == "USD" and not request.amount.is_integer():
+        # Для USD проверяем, что это целое число
+        if request.ticker == "USD" and not isinstance(request.amount, int):
+            logger.warning(f"USD amount must be integer: {request.amount}")
             raise HTTPException(status_code=400, detail="USD amount must be integer")
             
         db.deposit_balance(request.user_id, request.ticker, request.amount)
+        logger.info(f"Successfully deposited {request.amount} {request.ticker} for user {request.user_id}")
         return Ok()
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error depositing balance: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/admin/balance/withdraw", response_model=Ok, tags=["balance", "admin"])
