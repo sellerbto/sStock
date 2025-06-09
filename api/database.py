@@ -729,5 +729,51 @@ class Database:
         except DatabaseError as e:
             raise DatabaseError(f"Failed to get instruments: {str(e)}")
 
+    def get_best_price(self, ticker: str, direction: Direction) -> Optional[int]:
+        """Получение лучшей цены для рыночной заявки
+        
+        Args:
+            ticker: Тикер инструмента
+            direction: Направление заявки (BUY/SELL)
+            
+        Returns:
+            Optional[int]: Лучшая доступная цена или None, если нет подходящих заявок
+        """
+        try:
+            logger.info(f"Getting best price for {ticker} {direction}")
+            with self.get_session() as session:
+                # Для покупки ищем минимальную цену продажи
+                if direction == Direction.BUY:
+                    order = session.query(OrderModel)\
+                        .filter(
+                            OrderModel.ticker == ticker,
+                            OrderModel.direction == Direction.SELL,
+                            OrderModel.status == OrderStatus.ACTIVE,
+                            OrderModel.type == OrderType.LIMIT
+                        )\
+                        .order_by(OrderModel.price.asc())\
+                        .first()
+                # Для продажи ищем максимальную цену покупки
+                else:
+                    order = session.query(OrderModel)\
+                        .filter(
+                            OrderModel.ticker == ticker,
+                            OrderModel.direction == Direction.BUY,
+                            OrderModel.status == OrderStatus.ACTIVE,
+                            OrderModel.type == OrderType.LIMIT
+                        )\
+                        .order_by(OrderModel.price.desc())\
+                        .first()
+                
+                if order:
+                    logger.info(f"Found best price: {order.price}")
+                    return order.price
+                logger.warning(f"No active orders found for {ticker} {direction}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting best price: {str(e)}", exc_info=True)
+            raise DatabaseError(f"Failed to get best price: {str(e)}")
+
 # Create a global database instance
 db = Database("postgresql://postgres:postgres@db:5432/stock_exchange") 
