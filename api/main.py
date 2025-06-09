@@ -264,26 +264,15 @@ async def create_order(
 
 @app.get("/api/v1/order", tags=["order"])
 async def list_orders(
-    current_user: User = Depends(get_current_user),
-    status: Optional[OrderStatus] = None,
-    ticker: Optional[str] = None,
-    limit: int = Query(default=100, le=1000)
+    current_user: User = Depends(get_current_user)
 ):
     """Получение списка заявок пользователя"""
     try:
         logger.info(f"=== Starting GET /api/v1/order request ===")
         logger.info(f"User: {current_user.name} (ID: {current_user.id})")
-        logger.info(f"Filters: status={status}, ticker={ticker}, limit={limit}")
-
-        if ticker:
-            logger.info(f"Checking if instrument {ticker} exists")
-            if not db.get_instrument(ticker):
-                logger.warning(f"Instrument {ticker} not found")
-                raise HTTPException(status_code=404, detail="Instrument not found")
-            logger.info(f"Instrument {ticker} exists")
             
         logger.info(f"Fetching orders from database")
-        orders = db.get_user_orders(current_user.id, status, ticker, limit)
+        orders = db.get_user_orders(current_user.id)
         logger.info(f"Successfully retrieved {len(orders)} orders")
         
         # Логируем детали каждой заявки

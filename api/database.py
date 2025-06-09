@@ -508,31 +508,16 @@ class Database:
                     filled=self.get_filled_quantity(session, db_order.id)
                 )
 
-    def get_user_orders(
-        self,
-        user_id: UUID,
-        status: Optional[OrderStatus] = None,
-        ticker: Optional[str] = None,
-        limit: int = 100
-    ) -> List[Union[MarketOrder, LimitOrder]]:
+    def get_user_orders(self, user_id: UUID) -> List[Union[MarketOrder, LimitOrder]]:
         """Получение всех заявок пользователя"""
         try:
             logger.info(f"=== Starting get_user_orders ===")
             logger.info(f"User ID: {user_id}")
-            logger.info(f"Filters: status={status}, ticker={ticker}, limit={limit}")
             
             with self.get_session() as session:
                 logger.info("Querying orders from database")
                 query = session.query(OrderModel).filter(OrderModel.user_id == user_id)
-                
-                if status:
-                    logger.info(f"Filtering by status: {status}")
-                    query = query.filter(OrderModel.status == status)
-                if ticker:
-                    logger.info(f"Filtering by ticker: {ticker}")
-                    query = query.filter(OrderModel.ticker == ticker)
-                    
-                query = query.order_by(OrderModel.created_at.desc()).limit(limit)
+                query = query.order_by(OrderModel.created_at.desc())
                 db_orders = query.all()
                 logger.info(f"Found {len(db_orders)} raw orders in database")
                 
