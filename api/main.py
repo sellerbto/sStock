@@ -406,23 +406,16 @@ async def delete_instrument(
             
         if not ticker.isalnum():
             raise HTTPException(status_code=400, detail="Ticker must contain only letters and numbers")
-            
+        
         if not db.get_instrument(ticker):
             raise HTTPException(status_code=404, detail="Instrument not found")
-        
-        # Проверяем, нет ли активных заявок по этому инструменту
-        active_orders = db.get_active_orders_by_ticker(ticker)
-        if active_orders:
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot delete instrument with active orders"
-            )
-        
+            
         db.delete_instrument(ticker)
         return Ok()
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error deleting instrument {ticker} by user {current_user.name}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/admin/balance/deposit", response_model=Ok, tags=["balance", "admin"])
