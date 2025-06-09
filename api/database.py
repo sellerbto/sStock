@@ -132,12 +132,20 @@ class Database:
         except DatabaseError as e:
             raise DatabaseError(f"Failed to delete user: {str(e)}")
 
-    def get_balance(self, user_id: UUID) -> Balance:
+    def get_user_balance(self, user_id: UUID) -> Dict[str, int]:
         """Получение баланса пользователя"""
-        with self.get_session() as session:
-            balances = session.query(BalanceModel).filter(BalanceModel.user_id == str(user_id)).all()
-            balance_dict = {b.ticker: b.amount for b in balances}
-            return Balance(user_id=user_id, balances=balance_dict)
+        try:
+            logger.info(f"Getting balance for user: {user_id}")
+            with self.get_session() as session:
+                balance = session.query(BalanceModel).filter(BalanceModel.user_id == str(user_id)).first()
+                if not balance:
+                    logger.warning(f"No balance found for user: {user_id}")
+                    return {}
+                logger.info(f"Found balance: {balance.balances}")
+                return balance.balances
+        except Exception as e:
+            logger.error(f"Error getting user balance: {str(e)}", exc_info=True)
+            raise DatabaseError(f"Failed to get user balance: {str(e)}")
 
     def update_balance(self, user_id: UUID, ticker: str, amount: int) -> None:
         """Обновление баланса пользователя"""
