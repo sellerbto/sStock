@@ -159,7 +159,7 @@ async def create_order(
     try:
         logger.info(f"=== Starting POST /api/v1/order request ===")
         logger.info(f"User: {current_user.name} (ID: {current_user.id})")
-        logger.info(f"Order data: {order.body.dict()}")
+        logger.info(f"Order data: {order.dict()}")
         
         # Проверяем существование инструмента
         instrument = db.get_instrument(order.body.ticker)
@@ -204,37 +204,33 @@ async def create_order(
                         status_code=400,
                         detail=f"Insufficient RUB balance. Required: {required_rub}, Available: {balance.get('RUB', 0)}"
                     )
-        
+
         # Создаем заявку
-        order_id = uuid.uuid4()
-        logger.info(f"Creating order with ID: {order_id}")
-        
         if isinstance(order, MarketOrder):
-            logger.info("Adding market order to database")
-            db.add_market_order(
-                id=order_id,
+            logger.info(f"Creating market order: {order.dict()}")
+            order = db.add_market_order(
                 user_id=current_user.id,
                 ticker=order.body.ticker,
-                direction=order.body.direction,
-                quantity=order.body.qty
+                quantity=order.body.qty,
+                direction=order.body.direction
             )
         else:
-            logger.info("Adding limit order to database")
-            db.add_limit_order(
-                id=order_id,
+            logger.info(f"Creating limit order: {order.dict()}")
+            order = db.add_limit_order(
                 user_id=current_user.id,
                 ticker=order.body.ticker,
-                direction=order.body.direction,
                 quantity=order.body.qty,
-                price=order.body.price
+                price=order.body.price,
+                direction=order.body.direction
             )
-        
-        logger.info(f"Order created successfully - ID: {order_id}, Status: OrderStatus.NEW")
+
+        logger.info(f"Order created successfully: {order.id}")
         return CreateOrderResponse(
-            order_id=order_id,
+            order_id=order.id,
             success=True,
-            status=OrderStatus.NEW
+            status=order.status
         )
+
     except HTTPException:
         raise
     except Exception as e:
