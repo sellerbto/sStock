@@ -510,34 +510,57 @@ class Database:
 
     def get_user_orders(self, user_id: UUID) -> List[Union[MarketOrder, LimitOrder]]:
         """Получение всех заявок пользователя"""
-        with self.get_session() as session:
-            db_orders = session.query(OrderModel).filter(OrderModel.user_id == str(user_id)).all()
-            return [
-                MarketOrder(
-                    id=order.id,
-                    user_id=order.user_id,
-                    timestamp=order.created_at,
-                    body=MarketOrderBody(
-                        direction=order.direction,
-                        ticker=order.ticker,
-                        qty=order.quantity
-                    ),
-                    status=order.status
-                ) if order.price is None else
-                LimitOrder(
-                    id=order.id,
-                    user_id=order.user_id,
-                    timestamp=order.created_at,
-                    body=LimitOrderBody(
-                        direction=order.direction,
-                        ticker=order.ticker,
-                        qty=order.quantity,
-                        price=order.price
-                    ),
-                    status=order.status
-                )
-                for order in db_orders
-            ]
+        try:
+            logger.info(f"=== Starting get_user_orders ===")
+            logger.info(f"User ID: {user_id}")
+            
+            with self.get_session() as session:
+                logger.info("Querying orders from database")
+                db_orders = session.query(OrderModel).filter(OrderModel.user_id == user_id).all()
+                logger.info(f"Found {len(db_orders)} raw orders in database")
+                
+                orders = []
+                for order in db_orders:
+                    try:
+                        if order.price is None:
+                            logger.info(f"Converting market order: id={order.id}")
+                            market_order = MarketOrder(
+                                id=order.id,
+                                user_id=order.user_id,
+                                timestamp=order.created_at,
+                                body=MarketOrderBody(
+                                    direction=order.direction,
+                                    ticker=order.ticker,
+                                    qty=order.quantity
+                                ),
+                                status=order.status
+                            )
+                            orders.append(market_order)
+                        else:
+                            logger.info(f"Converting limit order: id={order.id}, price={order.price}")
+                            limit_order = LimitOrder(
+                                id=order.id,
+                                user_id=order.user_id,
+                                timestamp=order.created_at,
+                                body=LimitOrderBody(
+                                    direction=order.direction,
+                                    ticker=order.ticker,
+                                    qty=order.quantity,
+                                    price=order.price
+                                ),
+                                status=order.status
+                            )
+                            orders.append(limit_order)
+                    except Exception as e:
+                        logger.error(f"Error converting order {order.id}: {str(e)}", exc_info=True)
+                        raise
+                
+                logger.info(f"Successfully converted {len(orders)} orders")
+                logger.info(f"=== Completed get_user_orders ===")
+                return orders
+        except Exception as e:
+            logger.error(f"Database error in get_user_orders: {str(e)}", exc_info=True)
+            raise DatabaseError(f"Failed to get user orders: {str(e)}")
 
     def get_active_orders(self, user_id: UUID) -> List[Union[MarketOrder, LimitOrder]]:
         """Получение активных заявок пользователя"""

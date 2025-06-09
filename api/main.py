@@ -271,13 +271,33 @@ async def list_orders(
 ):
     """Получение списка заявок пользователя"""
     try:
-        if ticker and not db.get_instrument(ticker):
-            raise HTTPException(status_code=404, detail="Instrument not found")
+        logger.info(f"=== Starting GET /api/v1/order request ===")
+        logger.info(f"User: {current_user.name} (ID: {current_user.id})")
+        logger.info(f"Filters: status={status}, ticker={ticker}, limit={limit}")
+
+        if ticker:
+            logger.info(f"Checking if instrument {ticker} exists")
+            if not db.get_instrument(ticker):
+                logger.warning(f"Instrument {ticker} not found")
+                raise HTTPException(status_code=404, detail="Instrument not found")
+            logger.info(f"Instrument {ticker} exists")
             
-        return db.get_user_orders(current_user.id, status, ticker, limit)
+        logger.info(f"Fetching orders from database")
+        orders = db.get_user_orders(current_user.id, status, ticker, limit)
+        logger.info(f"Successfully retrieved {len(orders)} orders")
+        
+        # Логируем детали каждой заявки
+        for order in orders:
+            logger.info(f"Order: id={order.id}, status={order.status}, ticker={order.body.ticker}, "
+                       f"direction={order.body.direction}, qty={order.body.qty}")
+            
+        logger.info(f"=== Completed GET /api/v1/order request ===")
+        return orders
     except HTTPException:
+        logger.warning(f"HTTP Exception in GET /api/v1/order: {str(e)}")
         raise
     except Exception as e:
+        logger.error(f"Unexpected error in GET /api/v1/order: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/order/{order_id}", response_model=Union[MarketOrder, LimitOrder], tags=["order"])
