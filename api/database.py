@@ -516,7 +516,7 @@ class Database:
             
             with self.get_session() as session:
                 logger.info("Querying orders from database")
-                query = session.query(OrderModel).filter(OrderModel.user_id == user_id)
+                query = session.query(OrderModel).filter(OrderModel.user_id == str(user_id))
                 query = query.order_by(OrderModel.created_at.desc())
                 db_orders = query.all()
                 logger.info(f"Found {len(db_orders)} raw orders in database")
