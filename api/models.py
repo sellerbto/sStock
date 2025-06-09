@@ -59,7 +59,7 @@ class OrderExecutionSummary(BaseModel):
 
 class MarketOrderBody(BaseModel):
     direction: Direction
-    ticker: str = Field(..., min_length=1, max_length=10)
+    ticker: str
     qty: int = Field(..., gt=0)
 
     @validator('ticker')
@@ -70,7 +70,7 @@ class MarketOrderBody(BaseModel):
 
 class LimitOrderBody(BaseModel):
     direction: Direction
-    ticker: str = Field(..., min_length=1, max_length=10)
+    ticker: str
     qty: int = Field(..., gt=0)
     price: int = Field(..., gt=0)
 

@@ -231,6 +231,9 @@ async def create_order(
             status=order.status
         )
 
+    except ValidationError as e:
+        logger.error(f"Validation error: {str(e)}")
+        raise HTTPException(status_code=422, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
