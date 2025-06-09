@@ -414,7 +414,7 @@ async def deposit(
     """Пополнение баланса пользователя"""
     try:
         logger.info(f"=== Starting POST /api/v1/admin/balance/deposit request ===")
-        logger.info(f"Admin: {current_user.username} (ID: {current_user.id})")
+        logger.info(f"Admin: {current_user.name} (ID: {current_user.id})")
         logger.info(f"Deposit request: {request.dict()}")
         
         user = db.get_user_by_id(request.user_id)
