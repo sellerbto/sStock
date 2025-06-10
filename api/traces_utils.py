@@ -5,7 +5,7 @@ from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExport
 from opentelemetry.sdk.resources import Resource
 
 def init_tracer():
-    COLLECTOR_ENDPOINT = "localhost"
+    COLLECTOR_ENDPOINT = "jaeger"
     COLLECTOR_PORT = 4318
 
     resource = Resource(attributes={"service.name": "sStock"})

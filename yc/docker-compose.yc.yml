@@ -4,7 +4,7 @@ services:
   app:
     image: {{ env.API_IMAGE }}
     restart: always
-    command: opentelemetry-instrument --service_name sstock uvicorn api.main:app --host 0.0.0.0 --port 80 --proxy-headers --forwarded-allow-ips="*"
+    command: uvicorn api.main:app --host 0.0.0.0 --port 80 --proxy-headers --forwarded-allow-ips="*"
     depends_on:
       db:
         condition: service_healthy
@@ -45,6 +45,26 @@ services:
       volumes:
         - /certs/nginx.crt:/etc/nginx/certs/certificate.crt
         - /certs/nginx.key:/etc/nginx/certs/certificate.key
+
+  jaeger:
+      image: jaegertracing/jaeger:2.0.0
+      container_name: jaeger
+      environment:
+        - COLLECTOR_OTLP_ENABLED=true
+      ports:
+        - "5778:5778"
+        - "16686:16686"
+        - "4317:4317"
+        - "4318:4318"
+        - "14250:14250"
+        - "14268:14268"
+        - "9411:9411"
+      command:
+        - --set
+        - receivers.otlp.protocols.http.endpoint=0.0.0.0:4318
+        - --set
+        - receivers.otlp.protocols.grpc.endpoint=0.0.0.0:4317
+      restart: always
 
 
 volumes:
