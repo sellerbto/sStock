@@ -7,7 +7,7 @@ from .models import (
     UserModel, BalanceModel, OrderModel, ExecutionModel, InstrumentModel,
     User, Balance, MarketOrder, LimitOrder, MarketOrderBody, LimitOrderBody,
     OrderStatus, Direction, ExecutionDetails, OrderExecutionSummary, Instrument, L2OrderBook, Level,
-    Base, OrderType
+    Base
 )
 from uuid import UUID, uuid4
 from datetime import datetime, UTC
