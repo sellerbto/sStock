@@ -21,16 +21,21 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 import logging
 import time
-# from dotenv import load_dotenv
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from .traces_utils import init_tracer
+from dotenv import load_dotenv
 
 # Load environment variables
-# load_dotenv()
+init_tracer()
+load_dotenv()
 
 app = FastAPI(
     title="Stock Exchange",
     description="A stock exchange trading platform",
     version="0.1.0",
 )
+
+FastAPIInstrumentor.instrument_app(app)
 
 # Configure CORS
 app.add_middleware(
@@ -467,10 +472,23 @@ async def withdraw_balance(
         # Проверяем существование пользователя
         user = db.get_user_by_id(request.user_id)
         if not user:
-            logger.error(f"User not found: {request.user_id}")
-            raise HTTPException(status_code=404, detail=f"User {request.user_id} not found")
-
-        # Списываем средства
+            raise HTTPException(status_code=404, detail="User not found")
+            
+        if request.amount <= 0:
+            raise HTTPException(status_code=400, detail="Amount must be positive")
+            
+        if request.ticker == "USD" and not request.amount.is_integer():
+            raise HTTPException(status_code=400, detail="USD amount must be integer")
+            
+        balance = db.get_balance(request.user_id)
+        available_amount = balance.balances.get(request.ticker, 0)
+        
+        if available_amount < request.amount:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Insufficient balance. Available: {available_amount}, requested: {request.amount}"
+            )
+        
         db.withdraw_balance(request.user_id, request.ticker, request.amount)
         logger.info(f"Balance updated successfully for user {user.name}")
         return Ok()
