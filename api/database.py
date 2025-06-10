@@ -1,82 +1,44 @@
-"""database.py – Stock Exchange persistence layer with balance reservation
-
-This version fixes:
-• Missing `get_best_price` exposure detected by Pyright
-• Balance reservation (lock/unlock) on order entry / fill / cancel
-• Typo in `execute_market_order` (was `_get_session`)
-
-Assumptions
-===========
-* Cash currency is always *RUB* (rename everywhere if you add more fiat‑currencies).
-* Balances are maintained in integer minor units (cents, kopeks, etc.).
-* Order quantities and prices are immutable once inserted – remaining qty is tracked via `quantity` field.
-
-If your model differs, tweak the marked sections.
-"""
-
-from __future__ import annotations
-
-import logging
-from contextlib import contextmanager
-from datetime import UTC
-from typing import Dict, List, Optional, Union
-from uuid import UUID
-
-from sqlalchemy import and_, create_engine, func
+from sqlalchemy import create_engine, select, update, and_, or_, func
+from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.orm import Session, sessionmaker
-from asyncio import Semaphore
-
+from contextlib import contextmanager
+from typing import Dict, Optional, List, Union, Tuple
 from .models import (
-    Base,
-    BalanceModel,
-    Direction,
-    ExecutionDetails,
-    ExecutionModel,
-    Instrument,
-    InstrumentModel,
-    LimitOrder,
-    LimitOrderBody,
-    MarketOrder,
-    MarketOrderBody,
-    OrderExecutionSummary,
-    OrderModel,
-    OrderStatus,
-    User,
-    UserModel,
-    L2OrderBook,
-    Level,
+    UserModel, BalanceModel, OrderModel, ExecutionModel, InstrumentModel,
+    User, Balance, MarketOrder, LimitOrder, MarketOrderBody, LimitOrderBody,
+    OrderStatus, Direction, ExecutionDetails, OrderExecutionSummary, Instrument, L2OrderBook, Level,
+    Base
 )
+from uuid import UUID, uuid4
+from datetime import datetime, UTC
+import logging
+from asyncio import Semaphore
 
 logger = logging.getLogger(__name__)
 
-
 class DatabaseError(Exception):
-    """Base DB exception"""
-
+    """Базовый класс для ошибок базы данных"""
+    pass
 
 class DatabaseIntegrityError(DatabaseError):
-    """Unique / FK violation"""
-
+    """Ошибка целостности данных"""
+    pass
 
 class DatabaseNotFoundError(DatabaseError):
-    """Row not found"""
-
+    """Ошибка - запись не найдена"""
+    pass
 
 class Database:
-    """High‑level synchronised access to the SQL schema."""
-
     def __init__(self, connection_string: str):
         self.engine = create_engine(connection_string)
         self.SessionLocal = sessionmaker(bind=self.engine)
+        # Создаем все таблицы при инициализации
         Base.metadata.create_all(self.engine)
-        self._ticker_semaphores: dict[str, Semaphore] = {}
+        self.ticker_semaphores = {}  # Семафоры для каждого тикера
 
-    # ---------------------------------------------------------------------
-    # Session helper
-    # ---------------------------------------------------------------------
     @contextmanager
-    def get_session(self):  # noqa: D401 – contextmanager
+    def get_session(self):
+        """Контекстный менеджер для работы с сессией"""
         session = self.SessionLocal()
         try:
             yield session
@@ -87,292 +49,821 @@ class Database:
         except SQLAlchemyError as e:
             session.rollback()
             raise DatabaseError(str(e))
-        except Exception as e:  # pragma: no cover – last‑chance safety net
+        except Exception as e:
             session.rollback()
-            raise DatabaseError(f"Unexpected error: {e}")
+            raise DatabaseError(f"Unexpected error: {str(e)}")
         finally:
             session.close()
 
-    # ------------------------------------------------------------------
-    #  General utilities – semaphores, price discovery
-    # ------------------------------------------------------------------
-    def _get_ticker_semaphore(self, ticker: str) -> Semaphore:
-        if ticker not in self._ticker_semaphores:
-            self._ticker_semaphores[ticker] = Semaphore(1)
-        return self._ticker_semaphores[ticker]
-
-    def get_best_price(self, ticker: str, direction: Direction) -> Optional[int]:
-        """Return best available opposite‑side limit price for *ticker*.
-
-        * **BUY**  – best ask (lowest SELL price)
-        * **SELL** – best bid (highest BUY price)
-        """
-        with self.get_session() as sess:
-            query = sess.query(OrderModel).filter(
-                OrderModel.ticker == ticker,
-                OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-                OrderModel.price.isnot(None),  # limit only
-            )
-            if direction == Direction.BUY:
-                query = query.filter(OrderModel.direction == Direction.SELL).order_by(OrderModel.price.asc())
-            else:
-                query = query.filter(OrderModel.direction == Direction.BUY).order_by(OrderModel.price.desc())
-            row = query.first()
-            return row.price if row else None
-
-    # ------------------------------------------------------------------
-    #  User CRUD
-    # ------------------------------------------------------------------
     def add_user(self, user: User) -> None:
+        """Добавление пользователя"""
         try:
-            with self.get_session() as s:
-                s.add(UserModel(id=str(user.id), name=user.name, role=user.role, api_key=user.api_key))
-        except DatabaseIntegrityError:
-            raise DatabaseIntegrityError(f"User with name={user.name!r} or api_key already exists")
+            with self.get_session() as session:
+                db_user = UserModel(
+                    id=str(user.id),
+                    name=user.name,
+                    role=user.role,
+                    api_key=user.api_key,
+                )
+                session.add(db_user)
+        except DatabaseIntegrityError as e:
+            raise DatabaseIntegrityError(f"User with name {user.name} or api_key {user.api_key} already exists")
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to add user: {str(e)}")
 
     def get_user_by_api_key(self, api_key: str) -> Optional[User]:
-        with self.get_session() as s:
-            row = s.query(UserModel).filter_by(api_key=api_key).first()
-            return None if row is None else User(id=row.id, name=row.name, role=row.role, api_key=row.api_key)
+        """Получение пользователя по API ключу"""
+        try:
+            with self.get_session() as session:
+                db_user = session.query(UserModel).filter(UserModel.api_key == api_key).first()
+                if not db_user:
+                    return None
+                return User(
+                    id=db_user.id,
+                    name=db_user.name,
+                    role=db_user.role,
+                    api_key=db_user.api_key,
+                )
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to get user by api_key: {str(e)}")
 
     def get_user_by_name(self, name: str) -> Optional[User]:
-        with self.get_session() as s:
-            row = s.query(UserModel).filter_by(name=name).first()
-            return None if row is None else User(id=row.id, name=row.name, role=row.role, api_key=row.api_key)
+        """Получение пользователя по имени"""
+        try:
+            with self.get_session() as session:
+                db_user = session.query(UserModel).filter(UserModel.name == name).first()
+                if not db_user:
+                    return None
+                return User(
+                    id=db_user.id,
+                    name=db_user.name,
+                    role=db_user.role,
+                    api_key=db_user.api_key,
+                )
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to get user by name: {str(e)}")
 
     def get_user_by_id(self, user_id: UUID) -> Optional[User]:
-        with self.get_session() as s:
-            row = s.query(UserModel).filter_by(id=str(user_id)).first()
-            return None if row is None else User(id=row.id, name=row.name, role=row.role, api_key=row.api_key)
+        """Получение пользователя по ID"""
+        try:
+            with self.get_session() as session:
+                db_user = session.query(UserModel).filter(UserModel.id == str(user_id)).first()
+                if not db_user:
+                    return None
+                return User(
+                    id=db_user.id,
+                    name=db_user.name,
+                    role=db_user.role,
+                    api_key=db_user.api_key,
+                )
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to get user by id: {str(e)}")
 
+#                   id                  | name  | role  |                 api_key
+# --------------------------------------+-------+-------+------------------------------------------
+#  fb156fad-f405-4797-a2b8-906a3aba5bca | admin | ADMIN | key-81ce43a7-14fd-45de-9b99-82218228935a
+
+#f
     def delete_user(self, user_id: UUID) -> None:
-        with self.get_session() as s:
-            deleted = s.query(UserModel).filter_by(id=str(user_id)).delete()
-            if not deleted:
-                raise DatabaseNotFoundError(f"User {user_id} not found")
+        """Удаление пользователя"""
+        try:
+            with self.get_session() as session:
+                result = session.query(UserModel).filter(UserModel.id == str(user_id)).delete()
+                if result == 0:
+                    raise DatabaseNotFoundError(f"User {user_id} not found")
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to delete user: {str(e)}")
 
-    # ------------------------------------------------------------------
-    #  Balance helpers
-    # ------------------------------------------------------------------
-    def _get_balance_for_update(self, s: Session, user: UUID, ticker: str) -> BalanceModel:
-        bal = (
-            s.query(BalanceModel)
-            .with_for_update()
-            .filter(BalanceModel.user_id == str(user), BalanceModel.ticker == ticker)
-            .first()
-        )
-        if bal is None:
-            bal = BalanceModel(user_id=str(user), ticker=ticker, amount=0, locked_amount=0)
-            s.add(bal)
-        return bal
+    def get_user_balance(self, user_id: UUID) -> Dict[str, int]:
+        """Получение баланса пользователя"""
+        try:
+            logger.info(f"Getting balance for user: {user_id}")
+            with self.get_session() as session:
+                balances = session.query(BalanceModel).filter(BalanceModel.user_id == str(user_id)).all()
+                if not balances:
+                    logger.warning(f"No balance found for user: {user_id}")
+                    return {}
+
+                # Преобразуем список балансов в словарь {ticker: amount}
+                balance_dict = {balance.ticker: balance.amount for balance in balances}
+                logger.info(f"Found balance: {balance_dict}")
+                return balance_dict
+        except Exception as e:
+            logger.error(f"Error getting user balance: {str(e)}", exc_info=True)
+            raise DatabaseError(f"Failed to get user balance: {str(e)}")
+
+    def update_balance(self, user_id: UUID, ticker: str, amount: int) -> None:
+        """Обновление баланса пользователя"""
+        with self.get_session() as session:
+            # Блокируем строку для обновления
+            balance = session.query(BalanceModel).with_for_update().filter(
+                and_(
+                    BalanceModel.user_id == str(user_id),
+                    BalanceModel.ticker == ticker
+                )
+            ).first()
+
+            if not balance:
+                balance = BalanceModel(
+                    user_id=str(user_id),
+                    ticker=ticker,
+                    amount=0,
+                    locked_amount=0
+                )
+                session.add(balance)
+
+            new_amount = balance.amount + amount
+            if new_amount < 0:
+                raise ValueError(f"Insufficient balance for {ticker}: {balance.amount} < {abs(amount)}")
+
+            balance.amount = new_amount
 
     def lock_funds(self, user_id: UUID, ticker: str, amount: int) -> None:
-        with self.get_session() as s:
-            bal = self._get_balance_for_update(s, user_id, ticker)
-            available = bal.amount - bal.locked_amount
+        """Блокировка средств для ордера"""
+        with self.get_session() as session:
+            balance = session.query(BalanceModel).with_for_update().filter(
+                and_(
+                    BalanceModel.user_id == str(user_id),
+                    BalanceModel.ticker == ticker
+                )
+            ).first()
+
+            if not balance:
+                raise ValueError(f"No balance found for {ticker}")
+
+            available = balance.amount - balance.locked_amount
             if available < amount:
                 raise ValueError(f"Insufficient available balance for {ticker}: {available} < {amount}")
-            bal.locked_amount += amount
+
+            balance.locked_amount += amount
 
     def unlock_funds(self, user_id: UUID, ticker: str, amount: int) -> None:
-        with self.get_session() as s:
-            bal = self._get_balance_for_update(s, user_id, ticker)
-            if bal.locked_amount < amount:
-                raise ValueError(f"Cannot unlock more than locked: {bal.locked_amount} < {amount}")
-            bal.locked_amount -= amount
+        """Разблокировка средств"""
+        with self.get_session() as session:
+            balance = session.query(BalanceModel).with_for_update().filter(
+                and_(
+                    BalanceModel.user_id == str(user_id),
+                    BalanceModel.ticker == ticker
+                )
+            ).first()
 
-    def update_balance(self, user_id: UUID, ticker: str, delta: int) -> None:
-        with self.get_session() as s:
-            bal = self._get_balance_for_update(s, user_id, ticker)
-            if bal.amount + delta < 0:
-                raise ValueError(f"Insufficient balance for {ticker}")
-            bal.amount += delta
+            if not balance:
+                raise ValueError(f"No balance found for {ticker}")
 
-    # ------------------------------------------------------------------
-    #  Instrument CRUD (unchanged)
-    # ------------------------------------------------------------------
+            if balance.locked_amount < amount:
+                raise ValueError(f"Cannot unlock more than locked: {balance.locked_amount} < {amount}")
+
+            balance.locked_amount -= amount
+
     def add_instrument(self, instrument: Instrument) -> None:
+        """Добавление инструмента"""
         try:
-            with self.get_session() as s:
-                s.add(InstrumentModel(ticker=instrument.ticker.upper(), name=instrument.name.strip(), is_active=True))
-        except DatabaseIntegrityError:
-            raise DatabaseIntegrityError(f"Instrument {instrument.ticker} already exists")
+            with self.get_session() as session:
+                db_instrument = InstrumentModel(
+                    ticker=instrument.ticker.upper(),
+                    name=instrument.name.strip(),
+                    is_active=True
+                )
+                session.add(db_instrument)
+        except DatabaseIntegrityError as e:
+            raise DatabaseIntegrityError(f"Instrument with ticker {instrument.ticker} already exists")
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to add instrument: {str(e)}")
 
     def get_instrument(self, ticker: str) -> Optional[Instrument]:
-        with self.get_session() as s:
-            row = s.query(InstrumentModel).filter_by(ticker=ticker.upper(), is_active=True).first()
-            return None if row is None else Instrument(ticker=row.ticker, name=row.name)
+        """Получение инструмента"""
+        try:
+            with self.get_session() as session:
+                db_instrument = session.query(InstrumentModel).filter(
+                    and_(
+                        InstrumentModel.ticker == ticker.upper(),
+                        InstrumentModel.is_active == True
+                    )
+                ).first()
+
+                if not db_instrument:
+                    return None
+
+                return Instrument(
+                    ticker=db_instrument.ticker,
+                    name=db_instrument.name
+                )
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to get instrument: {str(e)}")
 
     def delete_instrument(self, ticker: str) -> None:
-        with self.get_session() as s:
-            deleted = s.query(InstrumentModel).filter_by(ticker=ticker.upper()).delete()
-            if not deleted:
-                raise DatabaseNotFoundError(f"Instrument {ticker} not found")
+        """Удаление инструмента"""
+        try:
+            with self.get_session() as session:
+                logger.info(f"Attempting to delete instrument with ticker: {ticker.upper()}")
+                result = session.query(InstrumentModel).filter(
+                    InstrumentModel.ticker == ticker.upper()
+                ).delete()
+                logger.info(f"Delete result: {result}")
 
-    # ------------------------------------------------------------------
-    #  Order entry helpers (reservation)
-    # ------------------------------------------------------------------
-    def _reserve_on_entry(self, order: Union[MarketOrder, LimitOrder]):
-        """Lock the needed funds before writing the order row."""
-        if order.body.direction == Direction.SELL:
-            # reserve the asset being sold
-            self.lock_funds(order.user_id, order.body.ticker, order.body.qty)
-        else:  # BUY = reserve cash
-            est_price: int | None
-            if isinstance(order, LimitOrder):
-                est_price = order.body.price
-            else:  # Market order – estimate via best ask
-                est_price = self.get_best_price(order.body.ticker, Direction.BUY)
-                if est_price is None:
-                    raise ValueError("No liquidity to evaluate BUY market order; cannot reserve cash")
-            self.lock_funds(order.user_id, "RUB", order.body.qty * est_price)
+                if result == 0:
+                    logger.warning(f"No instrument found with ticker: {ticker.upper()}")
+                    raise DatabaseNotFoundError(f"Instrument with ticker {ticker} not found")
 
-    # ------------------------------------------------------------------
-    #  Order creation
-    # ------------------------------------------------------------------
+                session.commit()
+                logger.info(f"Successfully deleted instrument with ticker: {ticker.upper()}")
+        except DatabaseError as e:
+            logger.error(f"Error deleting instrument: {str(e)}")
+            raise DatabaseError(f"Failed to delete instrument: {str(e)}")
+
     def add_market_order(self, order: MarketOrder) -> None:
-        logger.info("Adding market order %s", order.id)
-        self._reserve_on_entry(order)
-        with self.get_session() as s:
-            s.add(
-                OrderModel(
+        """Добавление рыночной заявки"""
+        try:
+            logger.info(f"=== Starting add_market_order ===")
+            logger.info(f"Order ID: {order.id}")
+            logger.info(f"User ID: {order.user_id}")
+            logger.info(f"Ticker: {order.body.ticker}")
+            logger.info(f"Direction: {order.body.direction}")
+            logger.info(f"Quantity: {order.body.qty}")
+
+            with self.get_session() as session:
+                # Проверяем существование инструмента
+                instrument = session.query(InstrumentModel).filter(
+                    InstrumentModel.ticker == order.body.ticker
+                ).first()
+
+                if not instrument:
+                    logger.warning(f"Instrument {order.body.ticker} not found")
+                    raise DatabaseNotFoundError(f"Instrument {order.body.ticker} not found")
+
+                # Создаем заявку
+                db_order = OrderModel(
                     id=order.id,
                     user_id=order.user_id,
                     ticker=order.body.ticker,
                     direction=order.body.direction,
                     quantity=order.body.qty,
-                    price=None,
+                    price=None,  # Для рыночной заявки цена не указывается
                     status=order.status,
-                    created_at=order.timestamp,
+                    created_at=order.timestamp
                 )
-            )
-        # execute outside the session context (locks taken inside)
-        with self.get_session() as s:
-            db_order = s.query(OrderModel).get(order.id)
-            self.execute_market_order_internal(s, db_order)
+
+                session.add(db_order)
+                session.commit()
+
+                logger.info(f"Market order added successfully: {order.id}")
+                logger.info(f"=== Completed add_market_order ===")
+
+                # Выполняем заявку
+                self.execute_market_order_internal(session, db_order)
+
+        except Exception as e:
+            logger.error(f"Database error in add_market_order: {str(e)}", exc_info=True)
+            raise DatabaseError(f"Failed to add market order: {str(e)}")
+
 
     def add_limit_order(self, order: LimitOrder) -> None:
-        logger.info("Adding limit order %s", order.id)
-        self._reserve_on_entry(order)
-        with self.get_session() as s:
-            s.add(
-                OrderModel(
+            """Добавление лимитной заявки с резервированием средств/активов"""
+            try:
+                logger.info("=== Starting add_limit_order ===")
+                with self.get_session() as session:
+                    # 1) check instrument
+                    instr = session.query(InstrumentModel)\
+                                   .filter(InstrumentModel.ticker == order.body.ticker)\
+                                   .first()
+                    if not instr:
+                        raise DatabaseNotFoundError(f"Instrument {order.body.ticker} not found")
+
+                    ticker = order.body.ticker
+                    qty    = order.body.qty
+                    price  = order.body.price
+
+                    # 2) reserve funds or assets
+                    if order.body.direction == Direction.SELL:
+                        # reserve the assets to sell
+                        self._lock_funds_session(session, order.user_id, ticker, qty)
+                    else:
+                        # reserve cash in RUB
+                        total_cost = qty * price
+                        self._lock_funds_session(session, order.user_id, "RUB", total_cost)
+
+                    # 3) create the order
+                    db_order = OrderModel(
+                        id=order.id,
+                        user_id=order.user_id,
+                        ticker=ticker,
+                        direction=order.body.direction,
+                        quantity=qty,
+                        price=price,
+                        status=order.status,
+                        created_at=order.timestamp
+                    )
+                    session.add(db_order)
+                    session.flush()  # ensure order.id etc.
+
+                    logger.info(f"Limit order {order.id} added and funds reserved")
+                    # 4) attempt matching
+                    self.execute_limit_order(session, db_order)
+
+            except Exception as e:
+                logger.error(f"Database error in add_limit_order: {e}", exc_info=True)
+                raise DatabaseError(f"Failed to add limit order: {e}")
+
+    def _get_ticker_semaphore(self, ticker: str) -> Semaphore:
+        """Получение семафора для тикера"""
+        if ticker not in self.ticker_semaphores:
+            self.ticker_semaphores[ticker] = Semaphore(1)
+        return self.ticker_semaphores[ticker]
+
+    def _lock_funds_session(self, session: Session, user_id: UUID, ticker: str, amount: int):
+            """Reserve funds/assets in the same session (for limit orders)"""
+            bal = session.query(BalanceModel)\
+                .with_for_update()\
+                .filter(and_(
+                    BalanceModel.user_id == str(user_id),
+                    BalanceModel.ticker == ticker
+                )).first()
+            if not bal:
+                raise ValueError(f"No balance found for {ticker}")
+            available = bal.amount - bal.locked_amount
+            if available < amount:
+                raise ValueError(f"Insufficient available {ticker}: {available} < {amount}")
+            bal.locked_amount += amount
+
+    def execute_market_order(self, order: OrderModel) -> None:
+        """Исполнение рыночной заявки"""
+        # Получаем семафор для тикера
+        # semaphore = self._get_ticker_semaphore(order.ticker)
+        # semaphore.acquire()
+        # try:
+        with self._get_session() as session:
+            self.execute_market_order_internal(session, order)
+        # finally:
+        #     semaphore.release()
+
+    def execute_market_order_internal(self, session: Session, order: OrderModel) -> None:
+        """Внутренний метод исполнения рыночной заявки"""
+        # Получаем все активные лимитные заявки в противоположном направлении
+        limit_orders = session.query(OrderModel).filter(
+            and_(
+                OrderModel.ticker == order.ticker,
+                OrderModel.direction != order.direction,
+                OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+                OrderModel.id != order.id
+            )
+        ).with_for_update().all()
+
+        # Сортируем заявки по цене в зависимости от направления
+        if order.direction == Direction.BUY:
+            # Для покупки сортируем по возрастанию цены (сначала дешевле)
+            limit_orders.sort(key=lambda x: x.price)
+        else:
+            # Для продажи сортируем по убыванию цены (сначала дороже)
+            limit_orders.sort(key=lambda x: x.price, reverse=True)
+
+        remaining_qty = order.quantity
+        for limit_order in limit_orders:
+            if remaining_qty <= 0:
+                break
+
+            # Определяем количество для исполнения
+            qty = min(remaining_qty, limit_order.quantity)
+
+            # Исполняем заявки
+            self._execute_orders(session, order, limit_order, qty)
+
+            remaining_qty -= qty
+
+        # Обновляем статус рыночной заявки
+        if remaining_qty == 0:
+            order.status = OrderStatus.EXECUTED
+        else:
+            order.status = OrderStatus.REJECTED
+            order.rejection_reason = "Не удалось исполнить рыночную заявку полностью"
+
+    def execute_limit_order(self, session: Session, order: OrderModel) -> None:
+        """Исполнение лимитной заявки"""
+        # Получаем все активные лимитные заявки в противоположном направлении
+        limit_orders = session.query(OrderModel).filter(
+            and_(
+                OrderModel.ticker == order.ticker,
+                OrderModel.direction != order.direction,
+                OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+                OrderModel.id != order.id,
+                OrderModel.price >= order.price if order.direction == Direction.SELL else OrderModel.price <= order.price
+            )
+        ).with_for_update().all()
+
+        # Сортируем заявки по цене в зависимости от направления
+        if order.direction == Direction.BUY:
+            # Для покупки сортируем по возрастанию цены (сначала дешевле)
+            limit_orders.sort(key=lambda x: x.price)
+        else:
+            # Для продажи сортируем по убыванию цены (сначала дороже)
+            limit_orders.sort(key=lambda x: x.price, reverse=True)
+
+        remaining_qty = order.quantity
+        for limit_order in limit_orders:
+            if remaining_qty <= 0:
+                break
+
+            # Определяем количество для исполнения
+            qty = min(remaining_qty, limit_order.quantity)
+
+            # Исполняем заявки
+            self._execute_orders(session, order, limit_order, qty)
+
+            remaining_qty -= qty
+
+        # Обновляем статус лимитной заявки
+        if remaining_qty == 0:
+            order.status = OrderStatus.EXECUTED
+        elif remaining_qty < order.quantity:
+            order.status = OrderStatus.PARTIALLY_EXECUTED
+            order.quantity = remaining_qty
+
+    def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
+        """Исполнение заявок между собой"""
+        price = order2.price  # Используем цену лимитной заявки
+
+        # Определяем покупателя и продавца
+        if order1.direction == Direction.BUY:
+            buyer, seller = order1, order2
+        else:
+            buyer, seller = order2, order1
+
+        # Создаем детали исполнения
+        execution = ExecutionModel(
+            order_id=order1.id,
+            counterparty_order_id=order2.id,
+            quantity=qty,
+            price=price
+        )
+        session.add(execution)
+
+        # Обновляем балансы
+        self._update_balances(session, buyer.user_id, seller.user_id, buyer.ticker, qty, price)
+
+        # Обновляем статусы заявок
+        if qty == order1.quantity:
+            order1.status = OrderStatus.EXECUTED
+        else:
+            order1.status = OrderStatus.PARTIALLY_EXECUTED
+            order1.quantity -= qty
+
+        if qty == order2.quantity:
+            order2.status = OrderStatus.EXECUTED
+        else:
+            order2.status = OrderStatus.PARTIALLY_EXECUTED
+            order2.quantity -= qty
+
+    def _update_balances(self, session: Session,
+                             buyer_id: UUID, seller_id: UUID,
+                             ticker: str, qty: int, price: int) -> None:
+            """При реальном исполнении: переводим и списываем зарезервированное"""
+            # 1) buyer pays cash
+            bbal = session.query(BalanceModel)\
+                .with_for_update()\
+                .filter(and_(BalanceModel.user_id == buyer_id, BalanceModel.ticker == "RUB"))\
+                .first()
+            if not bbal:
+                bbal = BalanceModel(user_id=buyer_id, ticker="RUB", amount=0, locked_amount=0)
+                session.add(bbal)
+            cost = qty * price
+            bbal.amount -= cost
+            bbal.locked_amount -= cost   # consume reservation
+
+            # 2) seller receives cash
+            sbal = session.query(BalanceModel)\
+                .with_for_update()\
+                .filter(and_(BalanceModel.user_id == seller_id, BalanceModel.ticker == "RUB"))\
+                .first()
+            if not sbal:
+                sbal = BalanceModel(user_id=seller_id, ticker="RUB", amount=0, locked_amount=0)
+                session.add(sbal)
+            sbal.amount += cost
+
+            # 3) buyer receives the asset
+            bibal = session.query(BalanceModel)\
+                .with_for_update()\
+                .filter(and_(BalanceModel.user_id == buyer_id, BalanceModel.ticker == ticker))\
+                .first()
+            if not bibal:
+                bibal = BalanceModel(user_id=buyer_id, ticker=ticker, amount=0, locked_amount=0)
+                session.add(bibal)
+            bibal.amount += qty
+
+            # 4) seller gives up the asset
+            sibal = session.query(BalanceModel)\
+                .with_for_update()\
+                .filter(and_(BalanceModel.user_id == seller_id, BalanceModel.ticker == ticker))\
+                .first()
+            if not sibal:
+                sibal = BalanceModel(user_id=seller_id, ticker=ticker, amount=0, locked_amount=0)
+                session.add(sibal)
+            sibal.amount -= qty
+            sibal.locked_amount -= qty   # consume reservation
+
+    def get_filled_quantity(self, session: Session, order_id: UUID) -> int:
+        """Получение количества исполненных единиц заявки"""
+        return session.query(func.sum(ExecutionModel.quantity)).filter(
+            ExecutionModel.order_id == order_id
+        ).scalar() or 0
+
+    def get_order(self, order_id: UUID) -> Optional[Union[MarketOrder, LimitOrder]]:
+        """Получение заявки по ID"""
+        with self.get_session() as session:
+            db_order = session.query(OrderModel).filter(OrderModel.id == order_id).first()
+            if not db_order:
+                return None
+
+            if db_order.price is None:
+                # Рыночная заявка
+                return MarketOrder(
+                    id=db_order.id,
+                    status=db_order.status,
+                    user_id=db_order.user_id,
+                    timestamp=db_order.created_at.replace(tzinfo=UTC),
+                    body=MarketOrderBody(
+                        direction=db_order.direction,
+                        ticker=db_order.ticker,
+                        qty=db_order.quantity
+                    ),
+                    filled=self.get_filled_quantity(session, db_order.id)
+                )
+            else:
+                # Лимитная заявка
+                return LimitOrder(
+                    id=db_order.id,
+                    status=db_order.status,
+                    user_id=db_order.user_id,
+                    timestamp=db_order.created_at.replace(tzinfo=UTC),
+                    body=LimitOrderBody(
+                        direction=db_order.direction,
+                        ticker=db_order.ticker,
+                        qty=db_order.quantity,
+                        price=db_order.price
+                    ),
+                    filled=self.get_filled_quantity(session, db_order.id)
+                )
+
+    def get_user_orders(self, user_id: UUID) -> List[Union[MarketOrder, LimitOrder]]:
+        """Получение всех заявок пользователя"""
+        try:
+            logger.info(f"=== Starting get_user_orders ===")
+            logger.info(f"User ID: {user_id}")
+
+            with self.get_session() as session:
+                logger.info("Querying orders from database")
+                query = session.query(OrderModel).filter(OrderModel.user_id == str(user_id))
+                query = query.order_by(OrderModel.created_at.desc())
+                db_orders = query.all()
+                logger.info(f"Found {len(db_orders)} raw orders in database")
+
+                orders = []
+                for order in db_orders:
+                    try:
+                        if order.price is None:
+                            logger.info(f"Converting market order: id={order.id}")
+                            market_order = MarketOrder(
+                                id=order.id,
+                                user_id=order.user_id,
+                                timestamp=order.created_at.replace(tzinfo=UTC),
+                                body=MarketOrderBody(
+                                    direction=order.direction,
+                                    ticker=order.ticker,
+                                    qty=order.quantity
+                                ),
+                                status=order.status,
+                                filled=self.get_filled_quantity(session, order.id)
+                            )
+                            orders.append(market_order)
+                        else:
+                            logger.info(f"Converting limit order: id={order.id}, price={order.price}")
+                            limit_order = LimitOrder(
+                                id=order.id,
+                                user_id=order.user_id,
+                                timestamp=order.created_at.replace(tzinfo=UTC),
+                                body=LimitOrderBody(
+                                    direction=order.direction,
+                                    ticker=order.ticker,
+                                    qty=order.quantity,
+                                    price=order.price
+                                ),
+                                status=order.status,
+                                filled=self.get_filled_quantity(session, order.id)
+                            )
+                            orders.append(limit_order)
+                    except Exception as e:
+                        logger.error(f"Error converting order {order.id}: {str(e)}", exc_info=True)
+                        raise
+
+                logger.info(f"Successfully converted {len(orders)} orders")
+                logger.info(f"=== Completed get_user_orders ===")
+                return orders
+        except Exception as e:
+            logger.error(f"Database error in get_user_orders: {str(e)}", exc_info=True)
+            raise DatabaseError(f"Failed to get user orders: {str(e)}")
+
+    def get_active_orders(self, user_id: UUID) -> List[Union[MarketOrder, LimitOrder]]:
+        """Получение активных заявок пользователя"""
+        with self.get_session() as session:
+            db_orders = session.query(OrderModel).filter(
+                and_(
+                    OrderModel.user_id == user_id,
+                    OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED])
+                )
+            ).all()
+            return [
+                MarketOrder(
                     id=order.id,
                     user_id=order.user_id,
-                    ticker=order.body.ticker,
-                    direction=order.body.direction,
-                    quantity=order.body.qty,
-                    price=order.body.price,
+                    timestamp=order.created_at.replace(tzinfo=UTC),
+                    body=MarketOrderBody(
+                        direction=order.direction,
+                        ticker=order.ticker,
+                        qty=order.quantity
+                    ),
                     status=order.status,
-                    created_at=order.timestamp,
+                    filled=self.get_filled_quantity(session, order.id)
+                ) if order.price is None else
+                LimitOrder(
+                    id=order.id,
+                    user_id=order.user_id,
+                    timestamp=order.created_at.replace(tzinfo=UTC),
+                    body=LimitOrderBody(
+                        direction=order.direction,
+                        ticker=order.ticker,
+                        qty=order.quantity,
+                        price=order.price
+                    ),
+                    status=order.status,
+                    filled=self.get_filled_quantity(session, order.id)
                 )
+                for order in db_orders
+            ]
+
+    def get_order_executions(self, order_id: UUID) -> List[ExecutionDetails]:
+        """Получение истории исполнений заявки"""
+        with self.get_session() as session:
+            executions = session.query(ExecutionModel).filter(
+                ExecutionModel.order_id == order_id
+            ).all()
+
+            return [
+                ExecutionDetails(
+                    execution_id=execution.id,
+                    timestamp=execution.executed_at,
+                    quantity=execution.quantity,
+                    price=execution.price,
+                    counterparty_order_id=execution.counterparty_order_id
+                )
+                for execution in executions
+            ]
+
+    def get_order_execution_summary(self, order_id: UUID) -> Optional[OrderExecutionSummary]:
+        """Получение сводки по исполнению заявки"""
+        with self.get_session() as session:
+            executions = self.get_order_executions(order_id)
+            if not executions:
+                return None
+
+            total_filled = sum(execution.quantity for execution in executions)
+            total_value = sum(execution.quantity * execution.price for execution in executions)
+            average_price = total_value / total_filled if total_filled > 0 else 0
+            last_execution_time = max(execution.timestamp for execution in executions)
+
+            return OrderExecutionSummary(
+                total_filled=total_filled,
+                average_price=average_price,
+                last_execution_time=last_execution_time,
+                executions=executions
             )
-        with self.get_session() as s:
-            db_order = s.query(OrderModel).get(order.id)
-            self.execute_limit_order(s, db_order)
 
-    # ------------------------------------------------------------------
-    #  Matching engine (unchanged except unlock‑funds calls)
-    # ------------------------------------------------------------------
-    def execute_market_order_internal(self, s: Session, order: OrderModel) -> None:
-        opposite = (
-            s.query(OrderModel)
-            .with_for_update()
-            .filter(
-                OrderModel.ticker == order.ticker,
-                OrderModel.direction != order.direction,
-                OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-                OrderModel.id != order.id,
+    def get_orderbook(self, ticker: str, limit: int = 10) -> L2OrderBook:
+        """Получение стакана заявок по инструменту"""
+        with self.get_session() as session:
+            # Получаем все активные лимитные заявки для этого тикера
+            active_orders = session.query(OrderModel).filter(
+                and_(
+                    OrderModel.ticker == ticker,
+                    OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+                    OrderModel.price.isnot(None)  # Только лимитные заявки
+                )
+            ).all()
+
+            # Разделяем на покупки и продажи
+            bids = [order for order in active_orders if order.direction == Direction.BUY]
+            asks = [order for order in active_orders if order.direction == Direction.SELL]
+
+            # Сортируем покупки по убыванию цены (лучшие цены сверху)
+            bids.sort(key=lambda x: x.price, reverse=True)
+            # Сортируем продажи по возрастанию цены (лучшие цены сверху)
+            asks.sort(key=lambda x: x.price)
+
+            # Группируем заявки по ценам
+            bid_levels = {}
+            for order in bids:
+                remaining_qty = order.quantity - self.get_filled_quantity(session, order.id)
+                if remaining_qty <= 0:
+                    continue
+                if order.price not in bid_levels:
+                    bid_levels[order.price] = 0
+                bid_levels[order.price] += remaining_qty
+
+            ask_levels = {}
+            for order in asks:
+                remaining_qty = order.quantity - self.get_filled_quantity(session, order.id)
+                if remaining_qty <= 0:
+                    continue
+                if order.price not in ask_levels:
+                    ask_levels[order.price] = 0
+                ask_levels[order.price] += remaining_qty
+
+            # Преобразуем в список уровней
+            bid_levels_list = [Level(price=price, qty=qty) for price, qty in bid_levels.items()]
+            ask_levels_list = [Level(price=price, qty=qty) for price, qty in ask_levels.items()]
+
+            # Ограничиваем количество уровней
+            return L2OrderBook(
+                bid_levels=bid_levels_list[:limit],
+                ask_levels=ask_levels_list[:limit]
             )
-            .all()
-        )
-        opposite.sort(key=lambda o: o.price or 0, reverse=(order.direction == Direction.SELL))
-        remaining = order.quantity
-        for lim in opposite:
-            if remaining <= 0:
-                break
-            qty = min(remaining, lim.quantity)
-            self._execute_trade(s, order, lim, qty)
-            remaining -= qty
-        order.status = OrderStatus.EXECUTED if remaining == 0 else OrderStatus.REJECTED
-        if remaining:
-            order.rejection_reason = "Could not fully execute market order"
 
-    def execute_limit_order(self, s: Session, order: OrderModel) -> None:
-        cond = (
-            OrderModel.price >= order.price if order.direction == Direction.SELL else OrderModel.price <= order.price
-        )
-        opposite = (
-            s.query(OrderModel)
-            .with_for_update()
-            .filter(
-                OrderModel.ticker == order.ticker,
-                OrderModel.direction != order.direction,
-                OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-                OrderModel.id != order.id,
-                cond,
-            )
-            .all()
-        )
-        opposite.sort(key=lambda o: o.price, reverse=(order.direction == Direction.SELL))
-        remaining = order.quantity
-        for lim in opposite:
-            if remaining <= 0:
-                break
-            qty = min(remaining, lim.quantity)
-            self._execute_trade(s, order, lim, qty)
-            remaining -= qty
-        if remaining == 0:
-            order.status = OrderStatus.EXECUTED
-        elif remaining < order.quantity:
-            order.status = OrderStatus.PARTIALLY_EXECUTED
-            order.quantity = remaining
+    def deposit_balance(self, user_id: UUID, ticker: str, amount: int) -> None:
+        """Пополнение баланса пользователя"""
+        self.update_balance(user_id, ticker, amount)
 
-    # ------------------------------------------------------------------
-    #  Trade settlement – update balances + release locks
-    # ------------------------------------------------------------------
-    def _execute_trade(self, s: Session, o1: OrderModel, o2: OrderModel, qty: int):
-        price = o2.price or o1.price  # market vs limit
-        # Decide buyer/seller
-        if o1.direction == Direction.BUY:
-            buyer, seller = o1, o2
-        else:
-            buyer, seller = o2, o1
-        # Create execution row
-        s.add(
-            ExecutionModel(
-                order_id=o1.id,
-                counterparty_order_id=o2.id,
-                quantity=qty,
-                price=price,
-            )
-        )
-        self._settle_cash_and_position(s, buyer.user_id, seller.user_id, o1.ticker, qty, price)
-        # reduce locked funds / remaining qty
-        self._adjust_after_fill(s, buyer, "RUB", qty * price)
-        self._adjust_after_fill(s, seller, o1.ticker, qty)
+    def withdraw_balance(self, user_id: UUID, ticker: str, amount: int) -> None:
+        """Списание средств с баланса пользователя"""
+        self.update_balance(user_id, ticker, -amount)
 
-    def _settle_cash_and_position(self, s: Session, buyer: UUID, seller: UUID, ticker: str, qty: int, price: int):
-        # Cash
-        self._get_balance_for_update(s, buyer, "RUB").amount -= qty * price
-        self._get_balance_for_update(s, seller, "RUB").amount += qty * price
-        # Instrument
-        self._get_balance_for_update(s, buyer, ticker).amount += qty
-        self._get_balance_for_update(s, seller, ticker).amount -= qty
+    def get_active_orders_by_ticker(self, ticker: str) -> list:
+        """Получение всех активных заявок по тикеру"""
+        with self.get_session() as session:
+            return session.query(OrderModel).filter(
+                OrderModel.ticker == ticker,
+                OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED])
+            ).all()
 
-    def _adjust_after_fill(self, s: Session, order: OrderModel, ticker: str, unlocked: int):
-        bal = self._get_balance_for_update(s, order.user_id, ticker)
-        bal.locked_amount -= unlocked
-        if bal.locked_amount < 0:  # safety guard
-            bal.locked_amount = 0
+    def get_all_instruments(self) -> List[Instrument]:
+        """Получение списка всех активных инструментов"""
+        try:
+            with self.get_session() as session:
+                db_instruments = session.query(InstrumentModel).filter(
+                    InstrumentModel.is_active == True
+                ).all()
 
-    # ------------------------------------------------------------------
-    #  (Other read‑only helpers stay identical – omitted for brevity)
-    # ------------------------------------------------------------------
+                return [
+                    Instrument(
+                        ticker=db_instrument.ticker,
+                        name=db_instrument.name
+                    )
+                    for db_instrument in db_instruments
+                ]
+        except DatabaseError as e:
+            raise DatabaseError(f"Failed to get instruments: {str(e)}")
 
+    def get_best_price(self, ticker: str, direction: Direction) -> Optional[int]:
+        """Получение лучшей цены для рыночной заявки
 
-# ----------------------------------------------------------------------
-# Global instance (same as before)
-# ----------------------------------------------------------------------
+        Args:
+            ticker: Тикер инструмента
+            direction: Направление заявки (BUY/SELL)
 
+        Returns:
+            Optional[int]: Лучшая доступная цена или None, если нет подходящих заявок
+        """
+        try:
+            logger.info(f"Getting best price for {ticker} {direction}")
+            with self.get_session() as session:
+                # Для покупки ищем минимальную цену продажи
+                if direction == Direction.BUY:
+                    order = session.query(OrderModel)\
+                        .filter(
+                            OrderModel.ticker == ticker,
+                            OrderModel.direction == Direction.SELL,
+                            OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+                            OrderModel.price.isnot(None)
+                        )\
+                        .order_by(OrderModel.price.asc())\
+                        .first()
+                # Для продажи ищем максимальную цену покупки
+                else:
+                    order = session.query(OrderModel)\
+                        .filter(
+                            OrderModel.ticker == ticker,
+                            OrderModel.direction == Direction.BUY,
+                            OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+                            OrderModel.price.isnot(None)
+                        )\
+                        .order_by(OrderModel.price.desc())\
+                        .first()
+
+                if order:
+                    logger.info(f"Found best price: {order.price}")
+                    return order.price
+                logger.warning(f"No active orders found for {ticker} {direction}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Error getting best price: {str(e)}", exc_info=True)
+            raise DatabaseError(f"Failed to get best price: {str(e)}")
+
+# Create a global database instance
 db = Database("postgresql://postgres:postgres@db:5432/stock_exchange")
