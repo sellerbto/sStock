@@ -277,13 +277,13 @@ class Database:
                 # Проверяем баланс перед созданием заявки
                 balance = self.get_user_balance(order.user_id)
                 if order.body.direction == Direction.BUY:
-                    # Для покупки проверяем баланс USD
-                    required_usd = order.body.qty * self.get_best_price(order.body.ticker, Direction.BUY)
-                    if not required_usd:
+                    # Для покупки проверяем баланс RUB
+                    required_rub = order.body.qty * self.get_best_price(order.body.ticker, Direction.BUY)
+                    if not required_rub:
                         raise ValueError(f"No active sell orders for {order.body.ticker}")
-                    available_usd = balance.get("USD", 0)
-                    if available_usd < required_usd:
-                        raise ValueError(f"Insufficient USD balance: {available_usd} < {required_usd}")
+                    available_rub = balance.get("RUB", 0)
+                    if available_rub < required_rub:
+                        raise ValueError(f"Insufficient RUB balance: {available_rub} < {required_rub}")
                 else:
                     # Для продажи проверяем баланс инструмента
                     available_qty = balance.get(order.body.ticker, 0)
