@@ -423,28 +423,26 @@ async def deposit(
         logger.info(f"=== Starting POST /api/v1/admin/balance/deposit request ===")
         logger.info(f"Admin: {current_user.name} (ID: {current_user.id})")
         logger.info(f"Deposit request: {request.dict()}")
-        
+
+        # Для RUB проверяем, что это целое число
+        if request.ticker == "RUB" and not isinstance(request.amount, int):
+            logger.warning(f"RUB amount must be integer: {request.amount}")
+            raise HTTPException(status_code=400, detail="RUB amount must be integer")
+
+        # Проверяем существование пользователя
         user = db.get_user_by_id(request.user_id)
         if not user:
             logger.error(f"User not found: {request.user_id}")
-            raise HTTPException(status_code=404, detail="User not found")
-            
-        if request.amount <= 0:
-            logger.warning(f"Invalid amount: {request.amount}")
-            raise HTTPException(status_code=400, detail="Amount must be positive")
-            
-        # Для USD проверяем, что это целое число
-        if request.ticker == "USD" and not isinstance(request.amount, int):
-            logger.warning(f"USD amount must be integer: {request.amount}")
-            raise HTTPException(status_code=400, detail="USD amount must be integer")
-            
+            raise HTTPException(status_code=404, detail=f"User {request.user_id} not found")
+
+        # Пополняем баланс
         db.deposit_balance(request.user_id, request.ticker, request.amount)
-        logger.info(f"Successfully deposited {request.amount} {request.ticker} for user {request.user_id}")
+        logger.info(f"Balance updated successfully for user {user.name}")
         return Ok()
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error depositing balance: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error in POST /api/v1/admin/balance/deposit: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/admin/balance/withdraw", response_model=Ok, tags=["balance", "admin"])
@@ -454,30 +452,28 @@ async def withdraw_balance(
 ):
     """Списание средств с баланса пользователя"""
     try:
+        logger.info(f"=== Starting POST /api/v1/admin/balance/withdraw request ===")
+        logger.info(f"Admin: {current_user.name} (ID: {current_user.id})")
+        logger.info(f"Withdraw request: {request.dict()}")
+
+        # Для RUB проверяем, что это целое число
+        if request.ticker == "RUB" and not request.amount.is_integer():
+            raise HTTPException(status_code=400, detail="RUB amount must be integer")
+
+        # Проверяем существование пользователя
         user = db.get_user_by_id(request.user_id)
         if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-            
-        if request.amount <= 0:
-            raise HTTPException(status_code=400, detail="Amount must be positive")
-            
-        if request.ticker == "USD" and not request.amount.is_integer():
-            raise HTTPException(status_code=400, detail="USD amount must be integer")
-            
-        balance = db.get_balance(request.user_id)
-        available_amount = balance.balances.get(request.ticker, 0)
-        
-        if available_amount < request.amount:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Insufficient balance. Available: {available_amount}, requested: {request.amount}"
-            )
-        
+            logger.error(f"User not found: {request.user_id}")
+            raise HTTPException(status_code=404, detail=f"User {request.user_id} not found")
+
+        # Списываем средства
         db.withdraw_balance(request.user_id, request.ticker, request.amount)
+        logger.info(f"Balance updated successfully for user {user.name}")
         return Ok()
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Unexpected error in POST /api/v1/admin/balance/withdraw: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/public/instrument", tags=["public"])

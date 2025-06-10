@@ -116,7 +116,7 @@ def test_get_me_success(client, user):
 
 def test_create_market_order(client, user):
     """Тест создания рыночной заявки"""
-    db.update_balance(user.id, "USD", 10000)
+    db.update_balance(user.id, "RUB", 10000)
     # Сначала создаём лимитную заявку на продажу, чтобы была встречная заявка
     db.update_balance(user.id, "BTC", 10)
     limit_response = client.post(
@@ -147,7 +147,7 @@ def test_create_market_order(client, user):
 
 def test_create_limit_order(client, user):
     """Тест создания лимитной заявки"""
-    db.update_balance(user.id, "USD", 10000)
+    db.update_balance(user.id, "RUB", 10000)
     db.update_balance(user.id, "BTC", 5)
     response = client.post(
         "/api/v1/order",
@@ -213,10 +213,10 @@ def test_get_order_details(client, user, admin, reset_db):
     )
     client.post(
         "/api/v1/admin/instrument",
-        json={"name": "US Dollar", "ticker": "USD"},
+        json={"name": "Russian Ruble", "ticker": "RUB"},
         headers=get_auth_header(admin.api_key)
     )
-    # Пополняем баланс пользователя BTC и USD
+    # Пополняем баланс пользователя BTC и RUB
     client.post(
         "/api/v1/admin/balance/deposit",
         json={"user_id": str(user.id), "ticker": "BTC", "amount": 10},
@@ -224,7 +224,7 @@ def test_get_order_details(client, user, admin, reset_db):
     )
     client.post(
         "/api/v1/admin/balance/deposit",
-        json={"user_id": str(user.id), "ticker": "USD", "amount": 100000},
+        json={"user_id": str(user.id), "ticker": "RUB", "amount": 100000},
         headers=get_auth_header(admin.api_key)
     )
     # Сначала создаём лимитную заявку на продажу BTC
@@ -266,7 +266,7 @@ def test_get_order_executions(client, user):
         headers=get_auth_header(user.api_key)
     )
     # Теперь создаём рыночную заявку на покупку
-    db.update_balance(user.id, "USD", 10000)
+    db.update_balance(user.id, "RUB", 10000)
     order_response = client.post(
         "/api/v1/order",
         json={
@@ -301,7 +301,7 @@ def test_get_order_summary(client, user):
         headers=get_auth_header(user.api_key)
     )
     # Теперь создаём рыночную заявку на покупку
-    db.update_balance(user.id, "USD", 10000)
+    db.update_balance(user.id, "RUB", 10000)
     order_response = client.post(
         "/api/v1/order",
         json={

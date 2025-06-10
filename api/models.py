@@ -3,7 +3,7 @@ from typing import Optional, Dict, Union, List
 from enum import Enum
 import uuid
 import bcrypt
-from datetime import datetime
+from datetime import datetime, UTC
 from sqlalchemy import Column, Integer, String, Enum as SQLEnum, ForeignKey, DateTime, Numeric, Boolean, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship, declarative_base
@@ -85,9 +85,14 @@ class BaseOrder(BaseModel):
     id: UUID4
     status: OrderStatus
     user_id: UUID4
-    timestamp: datetime
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     execution_summary: Optional[OrderExecutionSummary] = None
     rejection_reason: Optional[str] = None
+
+    class Config:
+        json_encoders = {
+            datetime: lambda v: v.isoformat()
+        }
 
 class MarketOrder(BaseOrder):
     body: MarketOrderBody

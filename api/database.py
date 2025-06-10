@@ -272,56 +272,93 @@ class Database:
     def add_market_order(self, order: MarketOrder) -> None:
         """Добавление рыночной заявки"""
         try:
-            logger.info(f"Adding market order: {order}")
+            logger.info(f"=== Starting add_market_order ===")
+            logger.info(f"Order ID: {order.id}")
+            logger.info(f"User ID: {order.user_id}")
+            logger.info(f"Ticker: {order.body.ticker}")
+            logger.info(f"Direction: {order.body.direction}")
+            logger.info(f"Quantity: {order.body.qty}")
+            
             with self.get_session() as session:
-                # Проверяем баланс перед созданием заявки
-                balance = self.get_user_balance(order.user_id)
-                if order.body.direction == Direction.BUY:
-                    # Для покупки проверяем баланс RUB
-                    required_rub = order.body.qty * self.get_best_price(order.body.ticker, Direction.BUY)
-                    if not required_rub:
-                        raise ValueError(f"No active sell orders for {order.body.ticker}")
-                    available_rub = balance.get("RUB", 0)
-                    if available_rub < required_rub:
-                        raise ValueError(f"Insufficient RUB balance: {available_rub} < {required_rub}")
-                else:
-                    # Для продажи проверяем баланс инструмента
-                    available_qty = balance.get(order.body.ticker, 0)
-                    if available_qty < order.body.qty:
-                        raise ValueError(f"Insufficient {order.body.ticker} balance: {available_qty} < {order.body.qty}")
-
+                # Проверяем существование инструмента
+                instrument = session.query(InstrumentModel).filter(
+                    InstrumentModel.ticker == order.body.ticker
+                ).first()
+                
+                if not instrument:
+                    logger.warning(f"Instrument {order.body.ticker} not found")
+                    raise DatabaseNotFoundError(f"Instrument {order.body.ticker} not found")
+                
+                # Создаем заявку
                 db_order = OrderModel(
                     id=order.id,
-                    user_id=str(order.user_id),
+                    user_id=order.user_id,
                     ticker=order.body.ticker,
                     direction=order.body.direction,
                     quantity=order.body.qty,
-                    price=None,  # Для рыночных заявок цена не указывается
-                    status=order.status
+                    price=None,  # Для рыночной заявки цена не указывается
+                    status=order.status,
+                    created_at=order.timestamp
                 )
+                
                 session.add(db_order)
-                # Сразу пытаемся исполнить рыночную заявку
+                session.commit()
+                
+                logger.info(f"Market order added successfully: {order.id}")
+                logger.info(f"=== Completed add_market_order ===")
+                
+                # Выполняем заявку
                 self.execute_market_order_internal(session, db_order)
-                logger.info(f"Market order added and executed: {order.id}")
+                
         except Exception as e:
-            logger.error(f"Error adding market order: {str(e)}", exc_info=True)
+            logger.error(f"Database error in add_market_order: {str(e)}", exc_info=True)
             raise DatabaseError(f"Failed to add market order: {str(e)}")
 
     def add_limit_order(self, order: LimitOrder) -> None:
         """Добавление лимитной заявки"""
-        with self.get_session() as session:
-            db_order = OrderModel(
-                id=order.id,
-                user_id=str(order.user_id),
-                ticker=order.body.ticker,
-                direction=order.body.direction,
-                quantity=order.body.qty,
-                price=order.body.price,
-                status=order.status
-            )
-            session.add(db_order)
-            # Пытаемся исполнить лимитную заявку
-            self.execute_limit_order(session, db_order)
+        try:
+            logger.info(f"=== Starting add_limit_order ===")
+            logger.info(f"Order ID: {order.id}")
+            logger.info(f"User ID: {order.user_id}")
+            logger.info(f"Ticker: {order.body.ticker}")
+            logger.info(f"Direction: {order.body.direction}")
+            logger.info(f"Quantity: {order.body.qty}")
+            logger.info(f"Price: {order.body.price}")
+            
+            with self.get_session() as session:
+                # Проверяем существование инструмента
+                instrument = session.query(InstrumentModel).filter(
+                    InstrumentModel.ticker == order.body.ticker
+                ).first()
+                
+                if not instrument:
+                    logger.warning(f"Instrument {order.body.ticker} not found")
+                    raise DatabaseNotFoundError(f"Instrument {order.body.ticker} not found")
+                
+                # Создаем заявку
+                db_order = OrderModel(
+                    id=order.id,
+                    user_id=order.user_id,
+                    ticker=order.body.ticker,
+                    direction=order.body.direction,
+                    quantity=order.body.qty,
+                    price=order.body.price,
+                    status=order.status,
+                    created_at=order.timestamp
+                )
+                
+                session.add(db_order)
+                session.commit()
+                
+                logger.info(f"Limit order added successfully: {order.id}")
+                logger.info(f"=== Completed add_limit_order ===")
+                
+                # Пытаемся выполнить заявку
+                self.execute_limit_order(session, db_order)
+                
+        except Exception as e:
+            logger.error(f"Database error in add_limit_order: {str(e)}", exc_info=True)
+            raise DatabaseError(f"Failed to add limit order: {str(e)}")
 
     def execute_market_order(self, order: MarketOrder) -> None:
         """Исполнение рыночной заявки"""
@@ -428,14 +465,14 @@ class Database:
         buyer_balance = session.query(BalanceModel).with_for_update().filter(
             and_(
                 BalanceModel.user_id == buyer_id,
-                BalanceModel.ticker == "USD"
+                BalanceModel.ticker == "RUB"
             )
         ).first()
         
         if not buyer_balance:
             buyer_balance = BalanceModel(
                 user_id=buyer_id,
-                ticker="USD",
+                ticker="RUB",
                 amount=0,
                 locked_amount=0
             )
@@ -447,14 +484,14 @@ class Database:
         seller_balance = session.query(BalanceModel).with_for_update().filter(
             and_(
                 BalanceModel.user_id == seller_id,
-                BalanceModel.ticker == "USD"
+                BalanceModel.ticker == "RUB"
             )
         ).first()
         
         if not seller_balance:
             seller_balance = BalanceModel(
                 user_id=seller_id,
-                ticker="USD",
+                ticker="RUB",
                 amount=0,
                 locked_amount=0
             )
