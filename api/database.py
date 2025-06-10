@@ -482,6 +482,19 @@ class Database:
         # Обновляем балансы
         self._update_balances(session, buyer.user_id, seller.user_id, buyer.ticker, qty, price)
 
+        # Обновляем статусы заявок
+        if qty == order1.quantity:
+            order1.status = OrderStatus.EXECUTED
+        else:
+            order1.status = OrderStatus.PARTIALLY_EXECUTED
+            order1.quantity -= qty
+
+        if qty == order2.quantity:
+            order2.status = OrderStatus.EXECUTED
+        else:
+            order2.status = OrderStatus.PARTIALLY_EXECUTED
+            order2.quantity -= qty
+
     def _update_balances(self, session: Session, buyer_id: UUID, seller_id: UUID, ticker: str, qty: int, price: int) -> None:
         """Обновление балансов после исполнения заявки"""
         # Списываем деньги у покупателя
