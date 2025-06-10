@@ -137,12 +137,15 @@ class Database:
         try:
             logger.info(f"Getting balance for user: {user_id}")
             with self.get_session() as session:
-                balance = session.query(BalanceModel).filter(BalanceModel.user_id == str(user_id)).first()
-                if not balance:
+                balances = session.query(BalanceModel).filter(BalanceModel.user_id == str(user_id)).all()
+                if not balances:
                     logger.warning(f"No balance found for user: {user_id}")
                     return {}
-                logger.info(f"Found balance: {balance.balances}")
-                return balance.balances
+                
+                # Преобразуем список балансов в словарь {ticker: amount}
+                balance_dict = {balance.ticker: balance.amount for balance in balances}
+                logger.info(f"Found balance: {balance_dict}")
+                return balance_dict
         except Exception as e:
             logger.error(f"Error getting user balance: {str(e)}", exc_info=True)
             raise DatabaseError(f"Failed to get user balance: {str(e)}")
