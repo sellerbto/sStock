@@ -389,11 +389,9 @@ class Database:
                 OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
                 OrderModel.id != order.id
             )
-        ).order_by(
-            OrderModel.price.desc() if order.direction == Direction.BUY else OrderModel.price.asc()
         ).with_for_update().all()
 
-        # Сортируем заявки по цене
+        # Сортируем заявки по цене в зависимости от направления
         if order.direction == Direction.BUY:
             # Для покупки сортируем по возрастанию цены (сначала дешевле)
             limit_orders.sort(key=lambda x: x.price)
@@ -432,11 +430,9 @@ class Database:
                 OrderModel.id != order.id,
                 OrderModel.price >= order.price if order.direction == Direction.SELL else OrderModel.price <= order.price
             )
-        ).order_by(
-            OrderModel.price.desc() if order.direction == Direction.BUY else OrderModel.price.asc()
         ).with_for_update().all()
 
-        # Сортируем заявки по цене
+        # Сортируем заявки по цене в зависимости от направления
         if order.direction == Direction.BUY:
             # Для покупки сортируем по возрастанию цены (сначала дешевле)
             limit_orders.sort(key=lambda x: x.price)
