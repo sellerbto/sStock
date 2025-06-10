@@ -6,7 +6,7 @@ from opentelemetry.sdk.resources import Resource
 
 def init_tracer():
     COLLECTOR_ENDPOINT = "localhost"
-    COLLECTOR_ENDPOINT = 4318
+    COLLECTOR_PORT = 4318
 
     resource = Resource(attributes={"service.name": "sStock"})
     provider = TracerProvider(resource=resource)
