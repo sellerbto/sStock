@@ -24,6 +24,10 @@ class DatabaseIntegrityError(DatabaseError):
 class DatabaseNotFoundError(DatabaseError):
     pass
 
+class InsufficientAvailableError(DatabaseError):
+    """Raised when the user has the asset/cash, but it is fully or partly locked."""
+    pass
+
 class Database:
     def __init__(self, connection_string: str):
         self.engine = create_engine(connection_string)
@@ -49,17 +53,16 @@ class Database:
             session.close()
 
     def _lock_funds_session(self, session: Session, user_id: UUID, ticker: str, amount: int):
-        bal = session.query(BalanceModel)\
-            .with_for_update()\
-            .filter(and_(
-                BalanceModel.user_id == str(user_id),
-                BalanceModel.ticker == ticker
-            )).first()
+        bal = session.query(BalanceModel).with_for_update().filter(
+            and_(BalanceModel.user_id == str(user_id), BalanceModel.ticker == ticker)
+        ).first()
         if not bal:
-            raise ValueError(f"No balance found for {ticker}")
+            raise InsufficientAvailableError(f"No balance found for {ticker}")
         available = bal.amount - bal.locked_amount
         if available < amount:
-            raise ValueError(f"Insufficient available {ticker}: {available} < {amount}")
+            raise InsufficientAvailableError(
+                f"Insufficient available {ticker}: {available} < {amount}"
+            )
         bal.locked_amount += amount
 
     # --- User management ---
@@ -175,8 +178,7 @@ class Database:
                 BalanceModel.user_id == str(user_id),
                 BalanceModel.ticker == ticker
             )).first()
-            if not bal or bal.locked_amount < amount:
-                raise ValueError(f"Cannot unlock {amount} of {ticker}")
+
             bal.locked_amount -= amount
 
     # --- Instrument management ---
@@ -266,6 +268,8 @@ class Database:
                 session.add(db_o)
                 session.flush()
                 self.execute_limit_order(session, db_o)
+        except InsufficientAvailableError:
+            raise          # propagate as-is (will be caught by the API layer)
         except Exception as e:
             raise DatabaseError(f"Failed to add limit order: {e}")
 

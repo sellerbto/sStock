@@ -11,7 +11,7 @@ from .models import (
     Instrument, Ok, DepositRequest, WithdrawRequest,
     L2OrderBook, UserRole
 )
-from .database import db, Database, DatabaseError, DatabaseIntegrityError, DatabaseNotFoundError
+from .database import db, Database, DatabaseError, DatabaseIntegrityError, DatabaseNotFoundError, InsufficientAvailableError
 from .auth import get_current_user, get_admin_user
 import os
 import uuid
@@ -103,6 +103,11 @@ async def database_exception_handler(request: Request, exc: DatabaseError):
     elif isinstance(exc, DatabaseNotFoundError):
         return JSONResponse(
             status_code=404,
+            content={"detail": str(exc)}
+        )
+    elif isinstance(exc, InsufficientAvailableError):
+        return JSONResponse(
+            status_code=400,
             content={"detail": str(exc)}
         )
     else:
