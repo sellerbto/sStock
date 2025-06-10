@@ -93,6 +93,10 @@ async def validation_exception_handler(request: Request, exc: ValidationError):
         content={"detail": exc.errors()}
     )
 
+@app.exception_handler(InsufficientAvailableError)
+async def insufficient_available_handler(request: Request, exc: InsufficientAvailableError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
 @app.exception_handler(DatabaseError)
 async def database_exception_handler(request: Request, exc: DatabaseError):
     if isinstance(exc, DatabaseIntegrityError):
