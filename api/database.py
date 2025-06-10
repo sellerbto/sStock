@@ -555,7 +555,7 @@ class Database:
                     id=db_order.id,
                     status=db_order.status,
                     user_id=db_order.user_id,
-                    timestamp=db_order.created_at,
+                    timestamp=db_order.created_at.replace(tzinfo=UTC),
                     body=MarketOrderBody(
                         direction=db_order.direction,
                         ticker=db_order.ticker,
@@ -569,7 +569,7 @@ class Database:
                     id=db_order.id,
                     status=db_order.status,
                     user_id=db_order.user_id,
-                    timestamp=db_order.created_at,
+                    timestamp=db_order.created_at.replace(tzinfo=UTC),
                     body=LimitOrderBody(
                         direction=db_order.direction,
                         ticker=db_order.ticker,
@@ -600,7 +600,7 @@ class Database:
                             market_order = MarketOrder(
                                 id=order.id,
                                 user_id=order.user_id,
-                                timestamp=order.created_at,
+                                timestamp=order.created_at.replace(tzinfo=UTC),
                                 body=MarketOrderBody(
                                     direction=order.direction,
                                     ticker=order.ticker,
@@ -615,7 +615,7 @@ class Database:
                             limit_order = LimitOrder(
                                 id=order.id,
                                 user_id=order.user_id,
-                                timestamp=order.created_at,
+                                timestamp=order.created_at.replace(tzinfo=UTC),
                                 body=LimitOrderBody(
                                     direction=order.direction,
                                     ticker=order.ticker,
@@ -650,7 +650,7 @@ class Database:
                 MarketOrder(
                     id=order.id,
                     user_id=order.user_id,
-                    timestamp=order.created_at,
+                    timestamp=order.created_at.replace(tzinfo=UTC),
                     body=MarketOrderBody(
                         direction=order.direction,
                         ticker=order.ticker,
@@ -662,7 +662,7 @@ class Database:
                 LimitOrder(
                     id=order.id,
                     user_id=order.user_id,
-                    timestamp=order.created_at,
+                    timestamp=order.created_at.replace(tzinfo=UTC),
                     body=LimitOrderBody(
                         direction=order.direction,
                         ticker=order.ticker,
