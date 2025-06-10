@@ -1,4 +1,3 @@
-from pickletools import I
 from sqlalchemy import create_engine, and_, func
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
