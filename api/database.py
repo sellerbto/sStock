@@ -397,6 +397,14 @@ class Database:
             OrderModel.price.desc() if order.direction == Direction.BUY else OrderModel.price.asc()
         ).with_for_update().all()
 
+        # Сортируем заявки по цене
+        if order.direction == Direction.BUY:
+            # Для покупки сортируем по возрастанию цены (сначала дешевле)
+            limit_orders.sort(key=lambda x: x.price)
+        else:
+            # Для продажи сортируем по убыванию цены (сначала дороже)
+            limit_orders.sort(key=lambda x: x.price, reverse=True)
+
         remaining_qty = order.quantity
         for limit_order in limit_orders:
             if remaining_qty <= 0:
@@ -419,44 +427,46 @@ class Database:
 
     def execute_limit_order(self, session: Session, order: OrderModel) -> None:
         """Исполнение лимитной заявки"""
-        # Получаем семафор для тикера
-        semaphore = self._get_ticker_semaphore(order.ticker)
-        semaphore.acquire()
-        try:
-            # Получаем все активные лимитные заявки в противоположном направлении
-            limit_orders = session.query(OrderModel).filter(
-                and_(
-                    OrderModel.ticker == order.ticker,
-                    OrderModel.direction != order.direction,
-                    OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-                    OrderModel.id != order.id,
-                    OrderModel.price >= order.price if order.direction == Direction.SELL else OrderModel.price <= order.price
-                )
-            ).order_by(
-                OrderModel.price.desc() if order.direction == Direction.BUY else OrderModel.price.asc()
-            ).with_for_update().all()
+        # Получаем все активные лимитные заявки в противоположном направлении
+        limit_orders = session.query(OrderModel).filter(
+            and_(
+                OrderModel.ticker == order.ticker,
+                OrderModel.direction != order.direction,
+                OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+                OrderModel.id != order.id,
+                OrderModel.price >= order.price if order.direction == Direction.SELL else OrderModel.price <= order.price
+            )
+        ).order_by(
+            OrderModel.price.desc() if order.direction == Direction.BUY else OrderModel.price.asc()
+        ).with_for_update().all()
 
-            remaining_qty = order.quantity
-            for limit_order in limit_orders:
-                if remaining_qty <= 0:
-                    break
+        # Сортируем заявки по цене
+        if order.direction == Direction.BUY:
+            # Для покупки сортируем по возрастанию цены (сначала дешевле)
+            limit_orders.sort(key=lambda x: x.price)
+        else:
+            # Для продажи сортируем по убыванию цены (сначала дороже)
+            limit_orders.sort(key=lambda x: x.price, reverse=True)
 
-                # Определяем количество для исполнения
-                qty = min(remaining_qty, limit_order.quantity)
+        remaining_qty = order.quantity
+        for limit_order in limit_orders:
+            if remaining_qty <= 0:
+                break
 
-                # Исполняем заявки
-                self._execute_orders(session, order, limit_order, qty)
+            # Определяем количество для исполнения
+            qty = min(remaining_qty, limit_order.quantity)
 
-                remaining_qty -= qty
+            # Исполняем заявки
+            self._execute_orders(session, order, limit_order, qty)
 
-            # Обновляем статус лимитной заявки
-            if remaining_qty == 0:
-                order.status = OrderStatus.EXECUTED
-            elif remaining_qty < order.quantity:
-                order.status = OrderStatus.PARTIALLY_EXECUTED
-                order.quantity = remaining_qty
-        finally:
-            semaphore.release()
+            remaining_qty -= qty
+
+        # Обновляем статус лимитной заявки
+        if remaining_qty == 0:
+            order.status = OrderStatus.EXECUTED
+        elif remaining_qty < order.quantity:
+            order.status = OrderStatus.PARTIALLY_EXECUTED
+            order.quantity = remaining_qty
 
     def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
         """Исполнение заявок между собой"""
