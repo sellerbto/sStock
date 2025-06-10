@@ -33,7 +33,7 @@ class Database:
         self.SessionLocal = sessionmaker(bind=self.engine)
         # Создаем все таблицы при инициализации
         Base.metadata.create_all(self.engine)
-        
+
     @contextmanager
     def get_session(self):
         """Контекстный менеджер для работы с сессией"""
@@ -141,7 +141,7 @@ class Database:
                 if not balances:
                     logger.warning(f"No balance found for user: {user_id}")
                     return {}
-                
+
                 # Преобразуем список балансов в словарь {ticker: amount}
                 balance_dict = {balance.ticker: balance.amount for balance in balances}
                 logger.info(f"Found balance: {balance_dict}")
@@ -160,7 +160,7 @@ class Database:
                     BalanceModel.ticker == ticker
                 )
             ).first()
-            
+
             if not balance:
                 balance = BalanceModel(
                     user_id=str(user_id),
@@ -169,11 +169,11 @@ class Database:
                     locked_amount=0
                 )
                 session.add(balance)
-            
+
             new_amount = balance.amount + amount
             if new_amount < 0:
                 raise ValueError(f"Insufficient balance for {ticker}: {balance.amount} < {abs(amount)}")
-            
+
             balance.amount = new_amount
 
     def lock_funds(self, user_id: UUID, ticker: str, amount: int) -> None:
@@ -185,14 +185,14 @@ class Database:
                     BalanceModel.ticker == ticker
                 )
             ).first()
-            
+
             if not balance:
                 raise ValueError(f"No balance found for {ticker}")
-            
+
             available = balance.amount - balance.locked_amount
             if available < amount:
                 raise ValueError(f"Insufficient available balance for {ticker}: {available} < {amount}")
-            
+
             balance.locked_amount += amount
 
     def unlock_funds(self, user_id: UUID, ticker: str, amount: int) -> None:
@@ -204,13 +204,13 @@ class Database:
                     BalanceModel.ticker == ticker
                 )
             ).first()
-            
+
             if not balance:
                 raise ValueError(f"No balance found for {ticker}")
-            
+
             if balance.locked_amount < amount:
                 raise ValueError(f"Cannot unlock more than locked: {balance.locked_amount} < {amount}")
-            
+
             balance.locked_amount -= amount
 
     def add_instrument(self, instrument: Instrument) -> None:
@@ -238,10 +238,10 @@ class Database:
                         InstrumentModel.is_active == True
                     )
                 ).first()
-                
+
                 if not db_instrument:
                     return None
-                    
+
                 return Instrument(
                     ticker=db_instrument.ticker,
                     name=db_instrument.name
@@ -258,11 +258,11 @@ class Database:
                     InstrumentModel.ticker == ticker.upper()
                 ).delete()
                 logger.info(f"Delete result: {result}")
-                
+
                 if result == 0:
                     logger.warning(f"No instrument found with ticker: {ticker.upper()}")
                     raise DatabaseNotFoundError(f"Instrument with ticker {ticker} not found")
-                
+
                 session.commit()
                 logger.info(f"Successfully deleted instrument with ticker: {ticker.upper()}")
         except DatabaseError as e:
@@ -352,10 +352,10 @@ class Database:
 
             # Определяем количество для исполнения
             qty = min(remaining_qty, limit_order.quantity)
-            
+
             # Исполняем заявки
             self._execute_orders(session, order, limit_order, qty)
-            
+
             remaining_qty -= qty
 
         # Обновляем статус рыночной заявки
@@ -387,10 +387,10 @@ class Database:
 
             # Определяем количество для исполнения
             qty = min(remaining_qty, limit_order.quantity)
-            
+
             # Исполняем заявки
             self._execute_orders(session, order, limit_order, qty)
-            
+
             remaining_qty -= qty
 
         # Обновляем статус лимитной заявки
@@ -403,13 +403,13 @@ class Database:
     def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
         """Исполнение заявок между собой"""
         price = order2.price  # Используем цену лимитной заявки
-        
+
         # Определяем покупателя и продавца
         if order1.direction == Direction.BUY:
             buyer, seller = order1, order2
         else:
             buyer, seller = order2, order1
-            
+
         # Создаем детали исполнения
         execution = ExecutionModel(
             order_id=order1.id,
@@ -418,7 +418,7 @@ class Database:
             price=price
         )
         session.add(execution)
-        
+
         # Обновляем балансы
         self._update_balances(session, buyer.user_id, seller.user_id, buyer.ticker, qty, price)
 
@@ -431,7 +431,7 @@ class Database:
                 BalanceModel.ticker == "USD"
             )
         ).first()
-        
+
         if not buyer_balance:
             buyer_balance = BalanceModel(
                 user_id=buyer_id,
@@ -440,9 +440,9 @@ class Database:
                 locked_amount=0
             )
             session.add(buyer_balance)
-        
+
         buyer_balance.amount -= qty * price
-        
+
         # Начисляем деньги продавцу
         seller_balance = session.query(BalanceModel).with_for_update().filter(
             and_(
@@ -450,7 +450,7 @@ class Database:
                 BalanceModel.ticker == "USD"
             )
         ).first()
-        
+
         if not seller_balance:
             seller_balance = BalanceModel(
                 user_id=seller_id,
@@ -459,9 +459,9 @@ class Database:
                 locked_amount=0
             )
             session.add(seller_balance)
-        
+
         seller_balance.amount += qty * price
-        
+
         # Обновляем балансы по инструменту
         buyer_instrument_balance = session.query(BalanceModel).with_for_update().filter(
             and_(
@@ -469,7 +469,7 @@ class Database:
                 BalanceModel.ticker == ticker
             )
         ).first()
-        
+
         if not buyer_instrument_balance:
             buyer_instrument_balance = BalanceModel(
                 user_id=buyer_id,
@@ -478,16 +478,16 @@ class Database:
                 locked_amount=0
             )
             session.add(buyer_instrument_balance)
-        
+
         buyer_instrument_balance.amount += qty
-        
+
         seller_instrument_balance = session.query(BalanceModel).with_for_update().filter(
             and_(
                 BalanceModel.user_id == seller_id,
                 BalanceModel.ticker == ticker
             )
         ).first()
-        
+
         if not seller_instrument_balance:
             seller_instrument_balance = BalanceModel(
                 user_id=seller_id,
@@ -496,7 +496,7 @@ class Database:
                 locked_amount=0
             )
             session.add(seller_instrument_balance)
-        
+
         seller_instrument_balance.amount -= qty
 
     def get_filled_quantity(self, session: Session, order_id: UUID) -> int:
@@ -546,14 +546,14 @@ class Database:
         try:
             logger.info(f"=== Starting get_user_orders ===")
             logger.info(f"User ID: {user_id}")
-            
+
             with self.get_session() as session:
                 logger.info("Querying orders from database")
                 query = session.query(OrderModel).filter(OrderModel.user_id == str(user_id))
                 query = query.order_by(OrderModel.created_at.desc())
                 db_orders = query.all()
                 logger.info(f"Found {len(db_orders)} raw orders in database")
-                
+
                 orders = []
                 for order in db_orders:
                     try:
@@ -589,7 +589,7 @@ class Database:
                     except Exception as e:
                         logger.error(f"Error converting order {order.id}: {str(e)}", exc_info=True)
                         raise
-                
+
                 logger.info(f"Successfully converted {len(orders)} orders")
                 logger.info(f"=== Completed get_user_orders ===")
                 return orders
@@ -639,7 +639,7 @@ class Database:
             executions = session.query(ExecutionModel).filter(
                 ExecutionModel.order_id == order_id
             ).all()
-            
+
             return [
                 ExecutionDetails(
                     execution_id=execution.id,
@@ -681,16 +681,16 @@ class Database:
                     OrderModel.price.isnot(None)  # Только лимитные заявки
                 )
             ).all()
-        
+
             # Разделяем на покупки и продажи
             bids = [order for order in active_orders if order.direction == Direction.BUY]
             asks = [order for order in active_orders if order.direction == Direction.SELL]
-        
+
             # Сортируем покупки по убыванию цены (лучшие цены сверху)
             bids.sort(key=lambda x: x.price, reverse=True)
             # Сортируем продажи по возрастанию цены (лучшие цены сверху)
             asks.sort(key=lambda x: x.price)
-        
+
             # Группируем заявки по ценам
             bid_levels = {}
             for order in bids:
@@ -700,7 +700,7 @@ class Database:
                 if order.price not in bid_levels:
                     bid_levels[order.price] = 0
                 bid_levels[order.price] += remaining_qty
-        
+
             ask_levels = {}
             for order in asks:
                 remaining_qty = order.quantity - self.get_filled_quantity(session, order.id)
@@ -709,11 +709,11 @@ class Database:
                 if order.price not in ask_levels:
                     ask_levels[order.price] = 0
                 ask_levels[order.price] += remaining_qty
-        
+
             # Преобразуем в список уровней
             bid_levels_list = [Level(price=price, qty=qty) for price, qty in bid_levels.items()]
             ask_levels_list = [Level(price=price, qty=qty) for price, qty in ask_levels.items()]
-        
+
             # Ограничиваем количество уровней
             return L2OrderBook(
                 bid_levels=bid_levels_list[:limit],
@@ -743,7 +743,7 @@ class Database:
                 db_instruments = session.query(InstrumentModel).filter(
                     InstrumentModel.is_active == True
                 ).all()
-                
+
                 return [
                     Instrument(
                         ticker=db_instrument.ticker,
@@ -756,11 +756,11 @@ class Database:
 
     def get_best_price(self, ticker: str, direction: Direction) -> Optional[int]:
         """Получение лучшей цены для рыночной заявки
-        
+
         Args:
             ticker: Тикер инструмента
             direction: Направление заявки (BUY/SELL)
-            
+
         Returns:
             Optional[int]: Лучшая доступная цена или None, если нет подходящих заявок
         """
@@ -789,16 +789,16 @@ class Database:
                         )\
                         .order_by(OrderModel.price.desc())\
                         .first()
-                
+
                 if order:
                     logger.info(f"Found best price: {order.price}")
                     return order.price
                 logger.warning(f"No active orders found for {ticker} {direction}")
                 return None
-                
+
         except Exception as e:
             logger.error(f"Error getting best price: {str(e)}", exc_info=True)
             raise DatabaseError(f"Failed to get best price: {str(e)}")
 
 # Create a global database instance
-db = Database("postgresql://postgres:postgres@db:5432/stock_exchange") 
+db = Database("postgresql://postgres:postgres@db:5432/stock_exchange")

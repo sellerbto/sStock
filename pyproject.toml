@@ -2,9 +2,7 @@
 name = "stock-exchange"
 version = "0.1.0"
 description = "A stock exchange trading platform"
-authors = [
-    {name = "Your Name", email = "your.email@example.com"},
-]
+authors = [{ name = "Your Name", email = "your.email@example.com" }]
 dependencies = [
     "fastapi>=0.68.0",
     "uvicorn>=0.15.0",
@@ -13,6 +11,11 @@ dependencies = [
     "python-multipart>=0.0.5",
     "sqlalchemy>=2.0.0",
     "psycopg2-binary>=2.9.0",
+    "opentelemetry-api>=1.34.1",
+    "opentelemetry-sdk>=1.34.1",
+    "opentelemetry-instrumentation-fastapi>=0.55b1",
+    "opentelemetry-exporter-otlp-proto-http>=1.34.1",
+    "dotenv>=0.9.9",
 ]
 requires-python = ">=3.11"
 
