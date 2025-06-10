@@ -1,15 +1,19 @@
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import ConsoleSpanExporter, BatchSpanProcessor
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
 
 def init_tracer():
-    resource = Resource(attributes={"service.name": "sstock"})
+    COLLECTOR_ENDPOINT = "localhost"
+    COLLECTOR_PORT = 4318
+
+    resource = Resource(attributes={"service.name": "sStock"})
     provider = TracerProvider(resource=resource)
-
-    # Используем ConsoleSpanExporter вместо OTLPSpanExporter
-    processor = BatchSpanProcessor(ConsoleSpanExporter())
+    processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=f"http://{COLLECTOR_ENDPOINT}:{COLLECTOR_PORT}/v1/traces"))
     provider.add_span_processor(processor)
-
     trace.set_tracer_provider(provider)
-    return trace.get_tracer("my.tracer.name")
+
+    tracer = trace.get_tracer("my.tracer.name")
+
+    return tracer
