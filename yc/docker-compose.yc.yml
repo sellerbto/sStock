@@ -46,6 +46,26 @@ services:
         - /certs/nginx.crt:/etc/nginx/certs/certificate.crt
         - /certs/nginx.key:/etc/nginx/certs/certificate.key
 
+  jaeger:
+      image: jaegertracing/jaeger:2.0.0
+      container_name: jaeger
+      environment:
+        - COLLECTOR_OTLP_ENABLED=true
+      ports:
+        - "5778:5778"
+        - "16686:16686"
+        - "4317:4317"
+        - "4318:4318"
+        - "14250:14250"
+        - "14268:14268"
+        - "9411:9411"
+      command:
+        - --set
+        - receivers.otlp.protocols.http.endpoint=0.0.0.0:4318
+        - --set
+        - receivers.otlp.protocols.grpc.endpoint=0.0.0.0:4317
+      restart: always
+
 
 volumes:
   postgres_data:
