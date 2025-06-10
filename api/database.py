@@ -368,20 +368,16 @@ class Database:
             self.ticker_semaphores[ticker] = Semaphore(1)
         return self.ticker_semaphores[ticker]
 
-    def execute_market_order(self, order: MarketOrder) -> None:
+    def execute_market_order(self, order: OrderModel) -> None:
         """Исполнение рыночной заявки"""
-        with self.get_session() as session:
-            db_order = session.query(OrderModel).filter(OrderModel.id == order.id).first()
-            if not db_order:
-                raise DatabaseNotFoundError(f"Order {order.id} not found")
-            
-            # Получаем семафор для тикера
-            semaphore = self._get_ticker_semaphore(db_order.ticker)
-            semaphore.acquire()
-            try:
-                self.execute_market_order_internal(session, db_order)
-            finally:
-                semaphore.release()
+        # Получаем семафор для тикера
+        # semaphore = self._get_ticker_semaphore(order.ticker)
+        # semaphore.acquire()
+        # try:
+        with self._get_session() as session:
+            self.execute_market_order_internal(session, order)
+        # finally:
+        #     semaphore.release()
 
     def execute_market_order_internal(self, session: Session, order: OrderModel) -> None:
         """Внутренний метод исполнения рыночной заявки"""
