@@ -271,19 +271,41 @@ class Database:
 
     def add_market_order(self, order: MarketOrder) -> None:
         """Добавление рыночной заявки"""
-        with self.get_session() as session:
-            db_order = OrderModel(
-                id=order.id,
-                user_id=str(order.user_id),
-                ticker=order.body.ticker,
-                direction=order.body.direction,
-                quantity=order.body.qty,
-                price=None,  # Для рыночных заявок цена не указывается
-                status=order.status
-            )
-            session.add(db_order)
-            # Сразу пытаемся исполнить рыночную заявку
-            self.execute_market_order_internal(session, db_order)
+        try:
+            logger.info(f"Adding market order: {order}")
+            with self.get_session() as session:
+                # Проверяем баланс перед созданием заявки
+                balance = self.get_user_balance(order.user_id)
+                if order.body.direction == Direction.BUY:
+                    # Для покупки проверяем баланс USD
+                    required_usd = order.body.qty * self.get_best_price(order.body.ticker, Direction.BUY)
+                    if not required_usd:
+                        raise ValueError(f"No active sell orders for {order.body.ticker}")
+                    available_usd = balance.get("USD", 0)
+                    if available_usd < required_usd:
+                        raise ValueError(f"Insufficient USD balance: {available_usd} < {required_usd}")
+                else:
+                    # Для продажи проверяем баланс инструмента
+                    available_qty = balance.get(order.body.ticker, 0)
+                    if available_qty < order.body.qty:
+                        raise ValueError(f"Insufficient {order.body.ticker} balance: {available_qty} < {order.body.qty}")
+
+                db_order = OrderModel(
+                    id=order.id,
+                    user_id=str(order.user_id),
+                    ticker=order.body.ticker,
+                    direction=order.body.direction,
+                    quantity=order.body.qty,
+                    price=None,  # Для рыночных заявок цена не указывается
+                    status=order.status
+                )
+                session.add(db_order)
+                # Сразу пытаемся исполнить рыночную заявку
+                self.execute_market_order_internal(session, db_order)
+                logger.info(f"Market order added and executed: {order.id}")
+        except Exception as e:
+            logger.error(f"Error adding market order: {str(e)}", exc_info=True)
+            raise DatabaseError(f"Failed to add market order: {str(e)}")
 
     def add_limit_order(self, order: LimitOrder) -> None:
         """Добавление лимитной заявки"""

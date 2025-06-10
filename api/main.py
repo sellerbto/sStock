@@ -143,11 +143,14 @@ async def register(new_user: NewUser):
 async def get_balances(current_user: User = Depends(get_current_user)):
     """Получение баланса пользователя"""
     try:
-        balance = db.get_balance(current_user.id)
-        return balance.balances
+        logger.info(f"Getting balance for user: {current_user.name} (ID: {current_user.id})")
+        balance = db.get_user_balance(current_user.id)
+        logger.info(f"Found balance: {balance}")
+        return balance
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Error getting balance: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/order", tags=["order"])
