@@ -10,7 +10,7 @@ def init_tracer():
 
     resource = Resource(attributes={"service.name": "sStock"})
     provider = TracerProvider(resource=resource)
-    processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=f"http://{COLLECTOR_ENDPOINT}:{COLLECTOR_ENDPOINT}/v1/traces"))
+    processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=f"http://{COLLECTOR_ENDPOINT}:{COLLECTOR_PORT}/v1/traces"))
     provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
 
