@@ -158,11 +158,11 @@ async def get_balances(current_user: User = Depends(get_current_user)):
         logger.error(f"Error getting balance: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/v1/order", tags=["order"])
+@app.post("/api/v1/order", response_model=CreateOrderResponse, tags=["order"])
 async def create_order(
     order_body: Union[MarketOrderBody, LimitOrderBody],
     current_user: User = Depends(get_current_user)
-) -> Union[MarketOrder, LimitOrder]:
+) -> CreateOrderResponse:
     """Создание новой заявки"""
     try:
         logger.info(f"=== Starting POST /api/v1/order request ===")
@@ -237,7 +237,11 @@ async def create_order(
             db.add_limit_order(order)
 
         logger.info(f"Order created successfully: {order.id}")
-        return order
+        return CreateOrderResponse(
+            order_id=order.id,
+            success=True,
+            status=order.status
+        )
 
     except ValidationError as e:
         logger.error(f"Validation error: {str(e)}")
