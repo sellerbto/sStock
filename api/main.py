@@ -11,7 +11,7 @@ from .models import (
     Instrument, Ok, DepositRequest, WithdrawRequest,
     L2OrderBook, UserRole
 )
-from .database import db, Database, DatabaseError, DatabaseIntegrityError, DatabaseNotFoundError, InsufficientAvailableError
+from .database import db, Database, DatabaseError, DatabaseIntegrityError, DatabaseNotFoundError, InsufficientAvailableError, CancelError
 from .auth import get_current_user, get_admin_user
 import os
 import uuid
@@ -603,6 +603,8 @@ async def cancel_order(order_id: uuid.UUID, current_user: User = Depends(get_cur
         # Здесь предполагается, что отмена меняет статус заявки на CANCELLED
         db.cancel_order(order_id)
         return Ok()
+    except CancelOrderError:
+        raise HTTPException(status_code=400, detail="Order already cancelled")
     except HTTPException:
         raise
     except Exception as e:

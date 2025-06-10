@@ -28,6 +28,10 @@ class InsufficientAvailableError(DatabaseError):
     """Raised when the user has the asset/cash, but it is fully or partly locked."""
     pass
 
+class CancelError(DatabaseError):
+    """Raised when the cancellation of an order fails."""
+    pass
+
 class Database:
     def __init__(self, connection_string: str):
         self.engine = create_engine(connection_string)
@@ -49,6 +53,9 @@ class Database:
         except InsufficientAvailableError:              # 👈 pass through unchanged
                session.rollback()
                raise
+        except CancelError:
+            session.rollback()
+            raise
         except Exception as e:
             session.rollback()
             raise DatabaseError(f"Unexpected error: {e}")
@@ -484,9 +491,9 @@ class Database:
             if not o:
                 raise DatabaseNotFoundError(f"Order {order_id} not found")
             if o.price is None:
-                raise DatabaseError("Cannot cancel a market order")
+                raise CancelError("Cannot cancel a market order")
             if o.status != OrderStatus.NEW:
-                raise DatabaseError(f"Cannot cancel order in status {o.status}")
+                raise CancelError(f"Cannot cancel order in status {o.status}")
 
             unfilled = o.quantity - self.get_filled_quantity(session, str(order_id))
             if unfilled > 0:
