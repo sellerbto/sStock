@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 import logging
 import time
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+# from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from .traces_utils import init_tracer
 from dotenv import load_dotenv
 
@@ -35,7 +35,7 @@ app = FastAPI(
     version="0.1.0",
 )
 
-FastAPIInstrumentor.instrument_app(app)
+# FastAPIInstrumentor.instrument_app(app)
 
 # Configure CORS
 app.add_middleware(
