@@ -4,12 +4,12 @@ from opentelemetry.sdk.trace.export import ConsoleSpanExporter, BatchSpanProcess
 from opentelemetry.sdk.resources import Resource
 
 def init_tracer():
-    resource = Resource(attributes={"service.name": "sStock"})
+    resource = Resource(attributes={"service.name": "sstock"})
     provider = TracerProvider(resource=resource)
-    
+
     # Используем ConsoleSpanExporter вместо OTLPSpanExporter
     processor = BatchSpanProcessor(ConsoleSpanExporter())
     provider.add_span_processor(processor)
-    
+
     trace.set_tracer_provider(provider)
     return trace.get_tracer("my.tracer.name")
