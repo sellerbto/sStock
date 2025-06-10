@@ -46,6 +46,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def _is_whole_number(x) -> bool:
+    """Return True for int or a float that represents a whole number."""
+    return isinstance(x, int) or (isinstance(x, float) and x.is_integer())
+
+
 # Mount static files
 app.mount("/static", StaticFiles(directory="api/static"), name="static")
 
@@ -479,8 +484,9 @@ async def withdraw_balance(
         logger.info(f"Withdraw request: {request.dict()}")
 
         # Для RUB проверяем, что это целое число
-        if request.ticker == "RUB" and not request.amount.is_integer():
-            raise HTTPException(status_code=400, detail="RUB amount must be integer")
+        if request.ticker == "RUB" and not _is_whole_number(request.amount):
+            raise HTTPException(status_code=400,
+                                detail=f"{request.ticker} amount must be integer")
 
         # Проверяем существование пользователя
         user = db.get_user_by_id(request.user_id)
