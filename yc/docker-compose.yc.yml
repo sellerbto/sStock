@@ -4,7 +4,7 @@ services:
   app:
     image: {{ env.API_IMAGE }}
     restart: always
-    command: opentelemetry-instrument --service-name sstock uvicorn api.main:app --host 0.0.0.0 --port 80 --proxy-headers --forwarded-allow-ips="*"
+    command: opentelemetry-instrument --service_name sstock uvicorn api.main:app --host 0.0.0.0 --port 80 --proxy-headers --forwarded-allow-ips="*"
     depends_on:
       db:
         condition: service_healthy
