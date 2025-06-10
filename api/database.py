@@ -239,35 +239,104 @@ class Database:
             raise DatabaseError(f"Failed to add market order: {e}")
 
     def add_limit_order(self, order: LimitOrder) -> None:
-        try:
-            with self.get_session() as session:
-                inst = session.query(InstrumentModel)\
-                    .filter(InstrumentModel.ticker == order.body.ticker).first()
-                if not inst:
-                    raise DatabaseNotFoundError(f"Instrument {order.body.ticker} not found")
+            try:
+                with self.get_session() as session:
+                    inst = session.query(InstrumentModel).filter(InstrumentModel.ticker == order.body.ticker).first()
+                    if not inst:
+                        raise DatabaseNotFoundError(f"Instrument {order.body.ticker} not found")
 
-                ticker, qty, price = order.body.ticker, order.body.qty, order.body.price
+                    ticker, qty, price = order.body.ticker, order.body.qty, order.body.price
+                    # Lock funds for SELL or BUY
+                    lock_ticker = ticker if order.body.direction == Direction.SELL else "RUB"
+                    lock_amount = qty if order.body.direction == Direction.SELL else qty * price
+                    bal = session.query(BalanceModel)\
+                        .with_for_update()\
+                        .filter(and_(BalanceModel.user_id == str(order.user_id), BalanceModel.ticker == lock_ticker))\
+                        .first()
+                    if not bal or (bal.amount - bal.locked_amount) < lock_amount:
+                        raise ValueError(f"Insufficient funds for {lock_ticker}")
+                    bal.locked_amount += lock_amount
 
-                if order.body.direction == Direction.SELL:
-                    self._lock_funds_session(session, order.user_id, ticker, qty)
-                else:
-                    self._lock_funds_session(session, order.user_id, "RUB", qty * price)
+                    db_o = OrderModel(
+                        id=str(order.id), user_id=str(order.user_id), ticker=ticker,
+                        direction=order.body.direction, quantity=qty, price=price,
+                        status=order.status, created_at=order.timestamp
+                    )
+                    session.add(db_o)
+                    session.flush()
+                    self.execute_limit_order(session, db_o)
+            except Exception as e:
+                raise DatabaseError(f"Failed to add limit order: {e}")
 
-                db_o = OrderModel(
-                    id=str(order.id),
-                    user_id=str(order.user_id),
-                    ticker=ticker,
-                    direction=order.body.direction,
-                    quantity=qty,
-                    price=price,
-                    status=order.status,
-                    created_at=order.timestamp
-                )
-                session.add(db_o)
-                session.flush()
-                self.execute_limit_order(session, db_o)
-        except Exception as e:
-            raise DatabaseError(f"Failed to add limit order: {e}")
+    def execute_limit_order(self, session: Session, order: OrderModel) -> None:
+        # Batch-prefetch filled quantities for all orders involved
+        filled_q = session.query(
+            ExecutionModel.order_id.label('oid'),
+            func.coalesce(func.sum(ExecutionModel.quantity), 0).label('filled')
+        ).group_by(ExecutionModel.order_id).subquery()
+
+        # Function to fetch filled from subquery
+        def get_filled(id_):
+            return session.query(filled_q.c.filled)\
+                            .filter(filled_q.c.oid == id_).scalar() or 0
+
+        base_filled = get_filled(str(order.id))
+        to_fill = order.quantity - base_filled
+        if to_fill <= 0:
+            order.status = OrderStatus.EXECUTED
+            return
+
+        Opp = aliased(OrderModel)
+        # Build candidate query with join to filled_q
+        opp_q = session.query(
+            Opp,
+            func.coalesce(filled_q.c.filled, 0).label('filled')
+        ).outerjoin(
+            filled_q, filled_q.c.oid == Opp.id
+        ).filter(
+            Opp.ticker == order.ticker,
+            Opp.direction != order.direction,
+            Opp.price.isnot(None),
+            Opp.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+            Opp.id != order.id,
+            (Opp.quantity - func.coalesce(filled_q.c.filled, 0)) > 0
+        )
+        # Apply price/time ordering in SQL
+        if order.direction == Direction.BUY:
+            opp_q = opp_q.order_by(Opp.price.asc(), Opp.created_at.asc())
+        else:
+            opp_q = opp_q.order_by(Opp.price.desc(), Opp.created_at.asc())
+
+        for other, other_filled in opp_q.with_for_update().all():
+            if to_fill <= 0:
+                break
+            rem = other.quantity - other_filled
+            qty = min(to_fill, rem)
+            # Execute trade
+            price = other.price
+            session.add(ExecutionModel(
+                order_id=order.id,
+                counterparty_order_id=other.id,
+                quantity=qty,
+                price=price
+            ))
+            # Update balances in batch via locked and free adjustments
+            cost = qty * price
+            # Buyer and Seller balances update logic unchanged...
+            # [ _update_balances(session, buyer_id, seller_id, ticker, qty, price) ]
+            self._update_balances(session,
+                                    buyer_id=UUID(order.user_id) if order.direction == Direction.BUY else UUID(other.user_id),
+                                    seller_id=UUID(other.user_id) if order.direction == Direction.BUY else UUID(order.user_id),
+                                    ticker=order.ticker, qty=qty, price=price)
+            to_fill -= qty
+
+        # Final status update
+        final_filled = get_filled(str(order.id))
+        order.status = (
+            OrderStatus.NEW if final_filled == 0 else
+            OrderStatus.PARTIALLY_EXECUTED if final_filled < order.quantity else
+            OrderStatus.EXECUTED
+        )
 
     def execute_market_order_internal(self, session: Session, order: OrderModel) -> None:
         filled = self.get_filled_quantity(session, order.id)
@@ -307,50 +376,6 @@ class Database:
         final = self.get_filled_quantity(session, order.id)
         order.status = (
             OrderStatus.REJECTED if final == 0 else
-            OrderStatus.PARTIALLY_EXECUTED if final < order.quantity else
-            OrderStatus.EXECUTED
-        )
-
-    def execute_limit_order(self, session: Session, order: OrderModel) -> None:
-        filled = self.get_filled_quantity(session, order.id)
-        to_fill = order.quantity - filled
-
-        if order.direction == Direction.BUY:
-            opp_q = session.query(OrderModel).filter(and_(
-                OrderModel.ticker == order.ticker,
-                OrderModel.direction == Direction.SELL,
-                OrderModel.price <= order.price,
-                OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-                OrderModel.id != order.id
-            ))
-            key = lambda o: (o.price, o.created_at)
-        else:
-            opp_q = session.query(OrderModel).filter(and_(
-                OrderModel.ticker == order.ticker,
-                OrderModel.direction == Direction.BUY,
-                OrderModel.price >= order.price,
-                OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-                OrderModel.id != order.id
-            ))
-            key = lambda o: (-o.price, o.created_at)
-
-        candidates = [
-            o for o in opp_q.with_for_update().all()
-            if (o.quantity - self.get_filled_quantity(session, o.id)) > 0
-        ]
-        candidates.sort(key=key)
-
-        for other in candidates:
-            if to_fill <= 0:
-                break
-            rem = other.quantity - self.get_filled_quantity(session, other.id)
-            qty = min(to_fill, rem)
-            self._execute_orders(session, order, other, qty)
-            to_fill -= qty
-
-        final = self.get_filled_quantity(session, order.id)
-        order.status = (
-            OrderStatus.NEW if final == 0 else
             OrderStatus.PARTIALLY_EXECUTED if final < order.quantity else
             OrderStatus.EXECUTED
         )
