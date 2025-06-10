@@ -113,15 +113,15 @@ async def register(new_user: NewUser):
     """Регистрация нового пользователя"""
     try:
         # Логируем входящие данные
-        logger.info(f"Registration attempt - Username: '{new_user.name}', Length: {len(new_user.name)}")
-        logger.info(f"Username contains ASCII only: {new_user.name.isascii()}")
-        logger.info(f"Username is alphanumeric: {new_user.name.isalnum()}")
-        logger.info(f"Username contains spaces: {' ' in new_user.name}")
-        logger.info(f"Username contains special chars: {not all(c.isalnum() for c in new_user.name)}")
+        # logger.info(f"Registration attempt - Username: '{new_user.name}', Length: {len(new_user.name)}")
+        # logger.info(f"Username contains ASCII only: {new_user.name.isascii()}")
+        # logger.info(f"Username is alphanumeric: {new_user.name.isalnum()}")
+        # logger.info(f"Username contains spaces: {' ' in new_user.name}")
+        # logger.info(f"Username contains special chars: {not all(c.isalnum() for c in new_user.name)}")
 
         # Проверяем, не существует ли уже пользователь с таким именем
         if db.get_user_by_name(new_user.name):
-            logger.warning(f"Registration failed - Username '{new_user.name}' already exists")
+            # logger.warning(f"Registration failed - Username '{new_user.name}' already exists")
             raise HTTPException(status_code=400, detail="User with this name already exists")
 
         user = User(
@@ -131,12 +131,12 @@ async def register(new_user: NewUser):
             api_key=f"key-{uuid.uuid4()}"
         )
         db.add_user(user)
-        logger.info(f"User registered successfully - ID: {user.id}, Name: {user.name}")
+        # logger.info(f"User registered successfully - ID: {user.id}, Name: {user.name}")
         return user
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Registration error: {str(e)}")
+        # logger.error(f"Registration error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/balance", tags=["balance"])
@@ -206,13 +206,14 @@ async def create_order(
                     )
 
         # Создаем заявку
+        current_time = datetime.now(UTC)
         if isinstance(order_body, MarketOrderBody):
             logger.info(f"Creating market order")
             order = MarketOrder(
                 id=uuid.uuid4(),
                 status=OrderStatus.NEW,
                 user_id=current_user.id,
-                timestamp=datetime.now(UTC),
+                timestamp=current_time,
                 body=order_body
             )
             db.add_market_order(order)
@@ -222,7 +223,7 @@ async def create_order(
                 id=uuid.uuid4(),
                 status=OrderStatus.NEW,
                 user_id=current_user.id,
-                timestamp=datetime.now(UTC),
+                timestamp=current_time,
                 body=order_body
             )
             db.add_limit_order(order)
