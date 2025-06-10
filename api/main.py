@@ -259,6 +259,9 @@ async def create_order(
                 status=order.status
             )
 
+    except InsufficientAvailableError as e:
+        logger.error(f"Insufficient available error: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
     except ValidationError as e:
         logger.error(f"Validation error: {str(e)}")
         logger.error(f"Validation error details: {e.errors()}")
