@@ -603,7 +603,7 @@ async def cancel_order(order_id: uuid.UUID, current_user: User = Depends(get_cur
         # Здесь предполагается, что отмена меняет статус заявки на CANCELLED
         db.cancel_order(order_id)
         return Ok()
-    except CancelOrderError:
+    except CancelError:
         raise HTTPException(status_code=400, detail="Order already cancelled")
     except HTTPException:
         raise
