@@ -93,6 +93,7 @@ class BaseOrder(BaseModel):
         json_encoders = {
             datetime: lambda v: v.isoformat()
         }
+        from_attributes = True
 
 class MarketOrder(BaseOrder):
     body: MarketOrderBody

@@ -275,7 +275,7 @@ async def list_orders(
         logger.error(f"Unexpected error in GET /api/v1/order: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/order/{order_id}", response_model=Union[MarketOrder, LimitOrder], tags=["order"])
+@app.get("/api/v1/order/{order_id}", response_model=CreateOrderResponse, tags=["order"])
 async def get_order(
     order_id: uuid.UUID,
     current_user: User = Depends(get_current_user)
@@ -287,7 +287,11 @@ async def get_order(
             raise HTTPException(status_code=404, detail="Order not found")
         if order.user_id != current_user.id:
             raise HTTPException(status_code=403, detail="Not enough permissions")
-        return order
+        return CreateOrderResponse(
+            order_id=order.id,
+            success=True,
+            status=order.status
+        )
     except HTTPException:
         raise
     except Exception as e:
