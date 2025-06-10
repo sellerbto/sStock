@@ -270,8 +270,6 @@ class Database:
                 self.execute_limit_order(session, db_o)
         except InsufficientAvailableError:
             raise          # propagate as-is (will be caught by the API layer)
-        except Exception as e:
-            raise DatabaseError(f"Failed to add limit order: {e}")
 
     def execute_market_order_internal(self, session: Session, order: OrderModel) -> None:
         filled = self.get_filled_quantity(session, order.id)
