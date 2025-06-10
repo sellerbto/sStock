@@ -1,5 +1,5 @@
 from sqlalchemy import create_engine, and_, func
-from sqlalchemy.orm import sessionmaker, Session, aliased
+from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from contextlib import contextmanager
 from typing import Dict, Optional, List, Union
@@ -239,104 +239,35 @@ class Database:
             raise DatabaseError(f"Failed to add market order: {e}")
 
     def add_limit_order(self, order: LimitOrder) -> None:
-            try:
-                with self.get_session() as session:
-                    inst = session.query(InstrumentModel).filter(InstrumentModel.ticker == order.body.ticker).first()
-                    if not inst:
-                        raise DatabaseNotFoundError(f"Instrument {order.body.ticker} not found")
+        try:
+            with self.get_session() as session:
+                inst = session.query(InstrumentModel)\
+                    .filter(InstrumentModel.ticker == order.body.ticker).first()
+                if not inst:
+                    raise DatabaseNotFoundError(f"Instrument {order.body.ticker} not found")
 
-                    ticker, qty, price = order.body.ticker, order.body.qty, order.body.price
-                    # Lock funds for SELL or BUY
-                    lock_ticker = ticker if order.body.direction == Direction.SELL else "RUB"
-                    lock_amount = qty if order.body.direction == Direction.SELL else qty * price
-                    bal = session.query(BalanceModel)\
-                        .with_for_update()\
-                        .filter(and_(BalanceModel.user_id == str(order.user_id), BalanceModel.ticker == lock_ticker))\
-                        .first()
-                    if not bal or (bal.amount - bal.locked_amount) < lock_amount:
-                        raise ValueError(f"Insufficient funds for {lock_ticker}")
-                    bal.locked_amount += lock_amount
+                ticker, qty, price = order.body.ticker, order.body.qty, order.body.price
 
-                    db_o = OrderModel(
-                        id=str(order.id), user_id=str(order.user_id), ticker=ticker,
-                        direction=order.body.direction, quantity=qty, price=price,
-                        status=order.status, created_at=order.timestamp
-                    )
-                    session.add(db_o)
-                    session.flush()
-                    self.execute_limit_order(session, db_o)
-            except Exception as e:
-                raise DatabaseError(f"Failed to add limit order: {e}")
+                if order.body.direction == Direction.SELL:
+                    self._lock_funds_session(session, order.user_id, ticker, qty)
+                else:
+                    self._lock_funds_session(session, order.user_id, "RUB", qty * price)
 
-    def execute_limit_order(self, session: Session, order: OrderModel) -> None:
-        # Batch-prefetch filled quantities for all orders involved
-        filled_q = session.query(
-            ExecutionModel.order_id.label('oid'),
-            func.coalesce(func.sum(ExecutionModel.quantity), 0).label('filled')
-        ).group_by(ExecutionModel.order_id).subquery()
-
-        # Function to fetch filled from subquery
-        def get_filled(id_):
-            return session.query(filled_q.c.filled)\
-                            .filter(filled_q.c.oid == id_).scalar() or 0
-
-        base_filled = get_filled(str(order.id))
-        to_fill = order.quantity - base_filled
-        if to_fill <= 0:
-            order.status = OrderStatus.EXECUTED
-            return
-
-        Opp = aliased(OrderModel)
-        # Build candidate query with join to filled_q
-        opp_q = session.query(
-            Opp,
-            func.coalesce(filled_q.c.filled, 0).label('filled')
-        ).outerjoin(
-            filled_q, filled_q.c.oid == Opp.id
-        ).filter(
-            Opp.ticker == order.ticker,
-            Opp.direction != order.direction,
-            Opp.price.isnot(None),
-            Opp.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-            Opp.id != order.id,
-            (Opp.quantity - func.coalesce(filled_q.c.filled, 0)) > 0
-        )
-        # Apply price/time ordering in SQL
-        if order.direction == Direction.BUY:
-            opp_q = opp_q.order_by(Opp.price.asc(), Opp.created_at.asc())
-        else:
-            opp_q = opp_q.order_by(Opp.price.desc(), Opp.created_at.asc())
-
-        for other, other_filled in opp_q.with_for_update().all():
-            if to_fill <= 0:
-                break
-            rem = other.quantity - other_filled
-            qty = min(to_fill, rem)
-            # Execute trade
-            price = other.price
-            session.add(ExecutionModel(
-                order_id=order.id,
-                counterparty_order_id=other.id,
-                quantity=qty,
-                price=price
-            ))
-            # Update balances in batch via locked and free adjustments
-            cost = qty * price
-            # Buyer and Seller balances update logic unchanged...
-            # [ _update_balances(session, buyer_id, seller_id, ticker, qty, price) ]
-            self._update_balances(session,
-                                    buyer_id=UUID(order.user_id) if order.direction == Direction.BUY else UUID(other.user_id),
-                                    seller_id=UUID(other.user_id) if order.direction == Direction.BUY else UUID(order.user_id),
-                                    ticker=order.ticker, qty=qty, price=price)
-            to_fill -= qty
-
-        # Final status update
-        final_filled = get_filled(str(order.id))
-        order.status = (
-            OrderStatus.NEW if final_filled == 0 else
-            OrderStatus.PARTIALLY_EXECUTED if final_filled < order.quantity else
-            OrderStatus.EXECUTED
-        )
+                db_o = OrderModel(
+                    id=str(order.id),
+                    user_id=str(order.user_id),
+                    ticker=ticker,
+                    direction=order.body.direction,
+                    quantity=qty,
+                    price=price,
+                    status=order.status,
+                    created_at=order.timestamp
+                )
+                session.add(db_o)
+                session.flush()
+                self.execute_limit_order(session, db_o)
+        except Exception as e:
+            raise DatabaseError(f"Failed to add limit order: {e}")
 
     def execute_market_order_internal(self, session: Session, order: OrderModel) -> None:
         filled = self.get_filled_quantity(session, order.id)
@@ -379,6 +310,86 @@ class Database:
             OrderStatus.PARTIALLY_EXECUTED if final < order.quantity else
             OrderStatus.EXECUTED
         )
+
+    # NEW helper ---------------------------------------------------------------
+    def _bulk_filled_qty(self, session: Session, order_ids: list[str]) -> dict[str, int]:
+        """Return {order_id: already_filled_qty} for many orders in ONE query."""
+        if not order_ids:
+            return {}
+        rows = (
+            session.query(
+                ExecutionModel.order_id,
+                func.coalesce(func.sum(ExecutionModel.quantity), 0)
+            )
+            .filter(ExecutionModel.order_id.in_(order_ids))
+            .group_by(ExecutionModel.order_id)
+            .all()
+        )
+        return {oid: qty for oid, qty in rows}
+
+    # REPLACE execute_limit_order ---------------------------------------------
+    def execute_limit_order(self, session: Session, order: OrderModel) -> None:
+        remaining_to_fill = order.quantity - self.get_filled_quantity(session, order.id)
+
+        # Build single DB query that already orders by most attractive price
+        if order.direction == Direction.BUY:           # we want cheapest asks first
+            opp_q = (
+                session.query(OrderModel)
+                .filter(
+                    OrderModel.ticker == order.ticker,
+                    OrderModel.direction == Direction.SELL,
+                    OrderModel.price <= order.price,
+                    OrderModel.status.in_([OrderStatus.NEW,
+                                           OrderStatus.PARTIALLY_EXECUTED]),
+                    OrderModel.id != order.id
+                )
+                .order_by(OrderModel.price.asc(), OrderModel.created_at.asc())
+                .with_for_update(skip_locked=True)
+            )
+        else:                                          # we want highest bids first
+            opp_q = (
+                session.query(OrderModel)
+                .filter(
+                    OrderModel.ticker == order.ticker,
+                    OrderModel.direction == Direction.BUY,
+                    OrderModel.price >= order.price,
+                    OrderModel.status.in_([OrderStatus.NEW,
+                                           OrderStatus.PARTIALLY_EXECUTED]),
+                    OrderModel.id != order.id
+                )
+                .order_by(OrderModel.price.desc(), OrderModel.created_at.asc())
+                .with_for_update(skip_locked=True)
+            )
+
+        # Fetch once; pre-compute already-filled amounts for *all* candidates
+        candidates: list[OrderModel] = opp_q.all()
+        filled_map = self._bulk_filled_qty(
+            session, [str(o.id) for o in candidates] + [str(order.id)]
+        )
+
+        for other in candidates:
+            if remaining_to_fill <= 0:
+                break
+
+            other_remaining = other.quantity - filled_map.get(str(other.id), 0)
+            if other_remaining <= 0:
+                continue
+
+            qty = other_remaining if other_remaining < remaining_to_fill else remaining_to_fill
+            self._execute_orders(session, order, other, qty)
+
+            # keep local counters in sync to avoid further DB calls
+            filled_map[str(other.id)] = filled_map.get(str(other.id), 0) + qty
+            remaining_to_fill -= qty
+
+        # Final status (unchanged logic)
+        already_filled = order.quantity - remaining_to_fill
+        order.status = (
+            OrderStatus.NEW if already_filled == 0 else
+            OrderStatus.PARTIALLY_EXECUTED if already_filled < order.quantity else
+            OrderStatus.EXECUTED
+        )
+
 
     def _execute_orders(self, session: Session,
                         order1: OrderModel, order2: OrderModel, qty: int) -> None:
