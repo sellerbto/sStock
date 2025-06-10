@@ -560,7 +560,8 @@ class Database:
                         direction=db_order.direction,
                         ticker=db_order.ticker,
                         qty=db_order.quantity
-                    )
+                    ),
+                    filled=self.get_filled_quantity(session, db_order.id)
                 )
             else:
                 # Лимитная заявка
@@ -605,7 +606,8 @@ class Database:
                                     ticker=order.ticker,
                                     qty=order.quantity
                                 ),
-                                status=order.status
+                                status=order.status,
+                                filled=self.get_filled_quantity(session, order.id)
                             )
                             orders.append(market_order)
                         else:
@@ -620,7 +622,8 @@ class Database:
                                     qty=order.quantity,
                                     price=order.price
                                 ),
-                                status=order.status
+                                status=order.status,
+                                filled=self.get_filled_quantity(session, order.id)
                             )
                             orders.append(limit_order)
                     except Exception as e:
@@ -653,7 +656,8 @@ class Database:
                         ticker=order.ticker,
                         qty=order.quantity
                     ),
-                    status=order.status
+                    status=order.status,
+                    filled=self.get_filled_quantity(session, order.id)
                 ) if order.price is None else
                 LimitOrder(
                     id=order.id,
@@ -665,7 +669,8 @@ class Database:
                         qty=order.quantity,
                         price=order.price
                     ),
-                    status=order.status
+                    status=order.status,
+                    filled=self.get_filled_quantity(session, order.id)
                 )
                 for order in db_orders
             ]
