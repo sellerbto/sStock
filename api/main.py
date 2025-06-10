@@ -162,7 +162,7 @@ async def get_balances(current_user: User = Depends(get_current_user)):
 async def create_order(
     order_body: Union[MarketOrderBody, LimitOrderBody],
     current_user: User = Depends(get_current_user)
-):
+) -> Union[MarketOrder, LimitOrder]:
     """Создание новой заявки"""
     try:
         logger.info(f"=== Starting POST /api/v1/order request ===")
@@ -237,11 +237,7 @@ async def create_order(
             db.add_limit_order(order)
 
         logger.info(f"Order created successfully: {order.id}")
-        return CreateOrderResponse(
-            order_id=order.id,
-            success=True,
-            status=order.status
-        )
+        return order
 
     except ValidationError as e:
         logger.error(f"Validation error: {str(e)}")
