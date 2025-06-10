@@ -751,7 +751,7 @@ class Database:
                         .filter(
                             OrderModel.ticker == ticker,
                             OrderModel.direction == Direction.SELL,
-                            OrderModel.status == OrderStatus.ACTIVE,
+                            OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
                             OrderModel.price.isnot(None)
                         )\
                         .order_by(OrderModel.price.asc())\
@@ -762,8 +762,8 @@ class Database:
                         .filter(
                             OrderModel.ticker == ticker,
                             OrderModel.direction == Direction.BUY,
-                            OrderModel.status == OrderStatus.ACTIVE,
-                            OrderModel.price.isnot(None)  
+                            OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+                            OrderModel.price.isnot(None)
                         )\
                         .order_by(OrderModel.price.desc())\
                         .first()
