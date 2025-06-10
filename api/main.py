@@ -159,7 +159,10 @@ async def create_order(
     try:
         logger.info(f"=== Starting POST /api/v1/order request ===")
         logger.info(f"User: {current_user.name} (ID: {current_user.id})")
-        logger.info(f"Order data: {order.dict()}")
+        logger.info(f"Raw order data: {order}")
+        logger.info(f"Order type: {type(order)}")
+        logger.info(f"Order body type: {type(order.body)}")
+        logger.info(f"Order body data: {order.body.dict()}")
         
         # Проверяем существование инструмента
         instrument = db.get_instrument(order.body.ticker)
@@ -233,11 +236,12 @@ async def create_order(
 
     except ValidationError as e:
         logger.error(f"Validation error: {str(e)}")
+        logger.error(f"Validation error details: {e.errors()}")
         raise HTTPException(status_code=422, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error creating order: {str(e)}", exc_info=True)
+        logger.error(f"Unexpected error in POST /api/v1/order: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/order", tags=["order"])
