@@ -749,7 +749,7 @@ class Database:
                             OrderModel.ticker == ticker,
                             OrderModel.direction == Direction.SELL,
                             OrderModel.status == OrderStatus.ACTIVE,
-                            OrderModel.price.isnot(None)  # Проверяем наличие цены вместо типа
+                            OrderModel.price.isnot(None)
                         )\
                         .order_by(OrderModel.price.asc())\
                         .first()
@@ -760,7 +760,7 @@ class Database:
                             OrderModel.ticker == ticker,
                             OrderModel.direction == Direction.BUY,
                             OrderModel.status == OrderStatus.ACTIVE,
-                            OrderModel.price.isnot(None)  # Проверяем наличие цены вместо типа
+                            OrderModel.price.isnot(None)  
                         )\
                         .order_by(OrderModel.price.desc())\
                         .first()
