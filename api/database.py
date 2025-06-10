@@ -34,7 +34,7 @@ class Database:
         self.SessionLocal = sessionmaker(bind=self.engine)
         # Создаем все таблицы при инициализации
         Base.metadata.create_all(self.engine)
-        self.execution_semaphore = Semaphore(1)  # Только одно исполнение заявки за раз
+        self.ticker_semaphores = {}  # Семафоры для каждого тикера
 
     @contextmanager
     def get_session(self):
@@ -362,17 +362,26 @@ class Database:
             logger.error(f"Database error in add_limit_order: {str(e)}", exc_info=True)
             raise DatabaseError(f"Failed to add limit order: {str(e)}")
 
+    def _get_ticker_semaphore(self, ticker: str) -> Semaphore:
+        """Получение семафора для тикера"""
+        if ticker not in self.ticker_semaphores:
+            self.ticker_semaphores[ticker] = Semaphore(1)
+        return self.ticker_semaphores[ticker]
+
     def execute_market_order(self, order: MarketOrder) -> None:
         """Исполнение рыночной заявки"""
         with self.get_session() as session:
             db_order = session.query(OrderModel).filter(OrderModel.id == order.id).first()
             if not db_order:
                 raise DatabaseNotFoundError(f"Order {order.id} not found")
-            self.execution_semaphore.acquire()
+            
+            # Получаем семафор для тикера
+            semaphore = self._get_ticker_semaphore(db_order.ticker)
+            semaphore.acquire()
             try:
                 self.execute_market_order_internal(session, db_order)
             finally:
-                self.execution_semaphore.release()
+                semaphore.release()
 
     def execute_market_order_internal(self, session: Session, order: OrderModel) -> None:
         """Внутренний метод исполнения рыночной заявки"""
@@ -410,7 +419,9 @@ class Database:
 
     def execute_limit_order(self, session: Session, order: OrderModel) -> None:
         """Исполнение лимитной заявки"""
-        self.execution_semaphore.acquire()
+        # Получаем семафор для тикера
+        semaphore = self._get_ticker_semaphore(order.ticker)
+        semaphore.acquire()
         try:
             # Получаем все активные лимитные заявки в противоположном направлении
             limit_orders = session.query(OrderModel).filter(
@@ -445,7 +456,7 @@ class Database:
                 order.status = OrderStatus.PARTIALLY_EXECUTED
                 order.quantity = remaining_qty
         finally:
-            self.execution_semaphore.release()
+            semaphore.release()
 
     def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
         """Исполнение заявок между собой"""
