@@ -225,7 +225,7 @@ class Database:
                 if not inst:
                     raise DatabaseNotFoundError(f"Instrument {order.body.ticker} not found")
                 db_o = OrderModel(
-                    id=str(order.id),
+                    id=order.id,
                     user_id=str(order.user_id),
                     ticker=order.body.ticker,
                     direction=order.body.direction,
@@ -256,8 +256,8 @@ class Database:
                     self._lock_funds_session(session, order.user_id, "RUB", qty * price)
 
                 db_o = OrderModel(
-                    id=str(order.id),
-                    user_id=str(order.user_id),
+                    id=order.id,
+                    user_id=order.user_id,
                     ticker=ticker,
                     direction=order.body.direction,
                     quantity=qty,
@@ -471,7 +471,7 @@ class Database:
         sib.locked_amount -= qty
 
     def get_filled_quantity(self, session: Session, order_id: Union[UUID, str]) -> int:
-        key = str(order_id)
+        key = order_id if isinstance(order_id, UUID) else UUID(order_id)
         return session.query(func.sum(ExecutionModel.quantity))\
             .filter(ExecutionModel.order_id == key).scalar() or 0
 
