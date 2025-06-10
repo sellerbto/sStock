@@ -1,3 +1,4 @@
+from pickletools import I
 from sqlalchemy import create_engine, and_, func
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -46,6 +47,9 @@ class Database:
         except SQLAlchemyError as e:
             session.rollback()
             raise DatabaseError(str(e))
+        except InsufficientAvailableError:              # 👈 pass through unchanged
+               session.rollback()
+               raise
         except Exception as e:
             session.rollback()
             raise DatabaseError(f"Unexpected error: {e}")
