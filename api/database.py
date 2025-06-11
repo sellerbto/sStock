@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 from datetime import UTC
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Generator
 from uuid import UUID
 
 from sqlalchemy import (
@@ -91,7 +91,7 @@ class Database:
     # ---------- session/context helper ---------------------------------------
 
     @contextmanager
-    def get_session(self) -> Session:
+    def get_session(self) -> Generator[Session, None, None]:
         session = self.SessionLocal()
         try:
             yield session
