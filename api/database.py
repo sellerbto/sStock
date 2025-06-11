@@ -477,7 +477,7 @@ class Database:
             qty = min(remaining_to_fill, other_remaining)
             self._execute_orders(session, order, other, qty)
 
-            filled_map[str(other.id)] += qty
+            filled_map[str(other.id)] = filled_map.get(str(other.id), 0) + qty
             remaining_to_fill -= qty
 
         already_filled = order.quantity - remaining_to_fill
