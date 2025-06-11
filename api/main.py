@@ -184,7 +184,6 @@ async def create_order(
 ) -> CreateOrderResponse:
     """Создание новой заявки"""
     try:
-        # Ожидаем освобождения семафора
         async with ORDER_SEMAPHORE:
             logger.info(f"=== Starting POST /api/v1/order request ===")
             logger.info(f"User: {current_user.name} (ID: {current_user.id})")
