@@ -866,6 +866,62 @@ class Database:
                 )
             return o.price if o else None
 
+    def execute_market_order_internal(self, session: Session, order: OrderModel) -> None:
+        """Внутренний метод исполнения рыночной заявки"""
+        remaining_to_fill = order.quantity
+
+        # Получаем все активные лимитные заявки в противоположном направлении
+        if order.direction == Direction.BUY:
+            opp_q = (
+                session.query(OrderModel)
+                .filter(
+                    OrderModel.ticker == order.ticker,
+                    OrderModel.direction == Direction.SELL,
+                    OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+                    OrderModel.id != order.id,
+                )
+                .order_by(OrderModel.price.asc(), OrderModel.created_at.asc())
+                .with_for_update(skip_locked=True)
+            )
+        else:
+            opp_q = (
+                session.query(OrderModel)
+                .filter(
+                    OrderModel.ticker == order.ticker,
+                    OrderModel.direction == Direction.BUY,
+                    OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+                    OrderModel.id != order.id,
+                )
+                .order_by(OrderModel.price.desc(), OrderModel.created_at.asc())
+                .with_for_update(skip_locked=True)
+            )
+
+        candidates: list[OrderModel] = opp_q.all()
+        filled_map = self._bulk_filled_qty(
+            session, [str(o.id) for o in candidates] + [str(order.id)]
+        )
+
+        for other in candidates:
+            if remaining_to_fill <= 0:
+                break
+
+            other_remaining = other.quantity - filled_map.get(str(other.id), 0)
+            if other_remaining <= 0:
+                continue
+
+            qty = min(remaining_to_fill, other_remaining)
+            self._execute_orders(session, order, other, qty)
+
+            filled_map[str(other.id)] = filled_map.get(str(other.id), 0) + qty
+            remaining_to_fill -= qty
+
+        # Обновляем статус рыночной заявки
+        if remaining_to_fill == 0:
+            order.status = OrderStatus.EXECUTED
+        else:
+            order.status = OrderStatus.REJECTED
+            order.rejection_reason = "Не удалось исполнить рыночную заявку полностью"
+
 
 # Global instance (unchanged signature)
 db = Database("postgresql://postgres:postgres@db:5432/stock_exchange")
