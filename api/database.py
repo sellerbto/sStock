@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from datetime import UTC
 from typing import Dict, List, Optional, Union, Generator
 from uuid import UUID
+from datetime import datetime
+
 
 from sqlalchemy import (
     and_,
@@ -82,6 +84,9 @@ class Database:
             max_overflow=40,
             pool_pre_ping=True,
             future=True,
+            # Добавляем настройки для предотвращения deadlock
+            isolation_level="READ COMMITTED",
+            pool_recycle=3600,
         )
         # Keep ORM instances alive after commit – avoids reloads
         self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False)
@@ -382,157 +387,170 @@ class Database:
     # match engine helpers ----------------------------------------------------
 
     def execute_limit_order(self, session: Session, order: OrderModel) -> None:
-        logger.info(f"Executing limit order: id={order.id}, direction={order.direction}, price={order.price}, qty={order.quantity}")
-        remaining_to_fill = order.quantity
-        filled_map = self._bulk_filled_qty(session, [str(order.id)])
+        """Execute a limit order against the order book."""
+        if order.status != OrderStatus.NEW:
+            return
 
-        if order.direction == Direction.BUY:
-            opp_q = (
-                session.query(OrderModel)
-                .filter(
-                    OrderModel.ticker == order.ticker,
-                    OrderModel.direction == Direction.SELL,
-                    OrderModel.price <= order.price,
-                    OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-                    OrderModel.id != order.id,
-                )
-                .order_by(OrderModel.price.asc(), OrderModel.created_at.asc())
-                .with_for_update(skip_locked=True)
+        # Находим встречные ордера с блокировкой
+        opposite_direction = Direction.SELL if order.direction == Direction.BUY else Direction.BUY
+        query = (
+            session.query(OrderModel)
+            .filter(
+                OrderModel.ticker == order.ticker,
+                OrderModel.direction == opposite_direction,
+                OrderModel.status == OrderStatus.NEW
             )
-        else:
-            opp_q = (
-                session.query(OrderModel)
-                .filter(
-                    OrderModel.ticker == order.ticker,
-                    OrderModel.direction == Direction.BUY,
-                    OrderModel.price >= order.price,
-                    OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-                    OrderModel.id != order.id,
-                )
-                .order_by(OrderModel.price.desc(), OrderModel.created_at.asc())
-                .with_for_update(skip_locked=True)
-            )
-
-        candidates: list[OrderModel] = opp_q.all()
-        filled_map.update(self._bulk_filled_qty(session, [str(o.id) for o in candidates]))
-
-        for other in candidates:
-            if remaining_to_fill <= 0:
-                break
-
-            other_remaining = other.quantity - filled_map.get(str(other.id), 0)
-            if other_remaining <= 0:
-                continue
-
-            qty = min(remaining_to_fill, other_remaining)
-            self._execute_orders(session, order, other, qty)
-
-            filled_map[str(other.id)] = filled_map.get(str(other.id), 0) + qty
-            remaining_to_fill -= qty
-
-        already_filled = order.quantity - remaining_to_fill
-        order.status = (
-            OrderStatus.NEW
-            if already_filled == 0
-            else OrderStatus.PARTIALLY_EXECUTED
-            if already_filled < order.quantity
-            else OrderStatus.EXECUTED
+            .with_for_update()  # Блокируем строки для обновления
         )
 
-    def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
-        try:
-            price = order2.price if order2.price is not None else order1.price
+        # Для покупки ищем ордера с ценой не выше указанной
+        if order.direction == Direction.BUY:
+            query = query.filter(OrderModel.price <= order.price).order_by(OrderModel.price)
+        else:
+            query = query.filter(OrderModel.price >= order.price).order_by(OrderModel.price.desc())
 
-            if order1.direction == Direction.BUY:
-                buyer, seller = order1, order2
-            else:
-                buyer, seller = order2, order1
+        opposite_orders = query.all()
 
-            execution = ExecutionModel(
-                order_id=order1.id,
-                counterparty_order_id=order2.id,
-                quantity=qty,
-                price=price
-            )
-            session.add(execution)
-            session.flush()
+        # Исполняем ордер
+        remaining_qty = order.quantity
+        for opposite_order in opposite_orders:
+            if remaining_qty == 0:
+                break
 
-            self._update_balances(session, buyer.user_id, seller.user_id, buyer.ticker, qty, price)
+            available_qty = opposite_order.quantity - self.get_filled_quantity(session, opposite_order.id)
+            execute_qty = min(remaining_qty, available_qty)
+            execute_price = opposite_order.price
 
-            filled1 = self.get_filled_quantity(session, order1.id)
-            filled2 = self.get_filled_quantity(session, order2.id)
+            if execute_qty > 0:
+                self._execute_orders(session, order, opposite_order, execute_qty)
+                remaining_qty -= execute_qty
 
-            order1.status = (
-                OrderStatus.EXECUTED if filled1 >= order1.quantity else
-                OrderStatus.PARTIALLY_EXECUTED if filled1 > 0 else
-                order1.status
-            )
-
-            order2.status = (
-                OrderStatus.EXECUTED if filled2 >= order2.quantity else
-                OrderStatus.PARTIALLY_EXECUTED if filled2 > 0 else
-                order2.status
-            )
-        except Exception as e:
-            logger.error(f"Error executing orders between {order1.id} and {order2.id}: {str(e)}")
-            raise
+        # Обновляем статус ордера
+        if remaining_qty == 0:
+            order.status = OrderStatus.FILLED
+        elif remaining_qty < order.quantity:
+            order.status = OrderStatus.PARTIALLY_FILLED
+        session.add(order)
 
     def execute_market_order_internal(self, session: Session, order: OrderModel) -> None:
-        try:
-            remaining_to_fill = order.quantity
+        """Execute a market order against the order book."""
+        if order.status != OrderStatus.NEW:
+            return
 
-            if order.direction == Direction.BUY:
-                opp_q = (
-                    session.query(OrderModel)
-                    .filter(
-                        OrderModel.ticker == order.ticker,
-                        OrderModel.direction == Direction.SELL,
-                        OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-                        OrderModel.id != order.id,
-                    )
-                    .order_by(OrderModel.price.asc(), OrderModel.created_at.asc())
-                    .with_for_update(skip_locked=True)
-                )
-            else:
-                opp_q = (
-                    session.query(OrderModel)
-                    .filter(
-                        OrderModel.ticker == order.ticker,
-                        OrderModel.direction == Direction.BUY,
-                        OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-                        OrderModel.id != order.id,
-                    )
-                    .order_by(OrderModel.price.desc(), OrderModel.created_at.asc())
-                    .with_for_update(skip_locked=True)
-                )
-
-            candidates: list[OrderModel] = opp_q.all()
-            filled_map = self._bulk_filled_qty(
-                session, [str(o.id) for o in candidates] + [str(order.id)]
+        # Находим встречные ордера с блокировкой
+        opposite_direction = Direction.SELL if order.direction == Direction.BUY else Direction.BUY
+        query = (
+            session.query(OrderModel)
+            .filter(
+                OrderModel.ticker == order.ticker,
+                OrderModel.direction == opposite_direction,
+                OrderModel.status == OrderStatus.NEW
             )
+            .with_for_update()  # Блокируем строки для обновления
+        )
 
-            for other in candidates:
-                if remaining_to_fill <= 0:
-                    break
+        # Для рыночных ордеров сортируем по цене
+        if order.direction == Direction.BUY:
+            query = query.order_by(OrderModel.price)  # Покупаем по самой низкой цене
+        else:
+            query = query.order_by(OrderModel.price.desc())  # Продаем по самой высокой цене
 
-                other_remaining = other.quantity - filled_map.get(str(other.id), 0)
-                if other_remaining <= 0:
-                    continue
+        opposite_orders = query.all()
 
-                qty = min(remaining_to_fill, other_remaining)
-                self._execute_orders(session, order, other, qty)
+        # Исполняем ордер
+        remaining_qty = order.quantity
+        for opposite_order in opposite_orders:
+            if remaining_qty == 0:
+                break
 
-                filled_map[str(other.id)] = filled_map.get(str(other.id), 0) + qty
-                remaining_to_fill -= qty
+            available_qty = opposite_order.quantity - self.get_filled_quantity(session, opposite_order.id)
+            execute_qty = min(remaining_qty, available_qty)
+            execute_price = opposite_order.price
 
-            if remaining_to_fill == 0:
-                order.status = OrderStatus.EXECUTED
-            else:
-                order.status = OrderStatus.REJECTED
-                order.rejection_reason = "Не удалось исполнить рыночную заявку полностью"
-        except Exception as e:
-            logger.error(f"Error executing market order {order.id}: {str(e)}")
-            raise
+            if execute_qty > 0:
+                self._execute_orders(session, order, opposite_order, execute_qty)
+                remaining_qty -= execute_qty
+
+        # Обновляем статус ордера
+        if remaining_qty == 0:
+            order.status = OrderStatus.FILLED
+        elif remaining_qty < order.quantity:
+            order.status = OrderStatus.PARTIALLY_FILLED
+        session.add(order)
+
+    def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
+        """Execute a trade between two orders."""
+        # Определяем покупателя и продавца
+        if order1.direction == Direction.BUY:
+            buyer_order = order1
+            seller_order = order2
+        else:
+            buyer_order = order2
+            seller_order = order1
+
+        # Создаем запись о сделке
+        execution = ExecutionModel(
+            order_id=str(buyer_order.id),
+            opposite_order_id=str(seller_order.id),
+            quantity=qty,
+            price=seller_order.price,
+            timestamp=datetime.now(UTC)
+        )
+        session.add(execution)
+
+        # Обновляем балансы
+        self._update_balances(
+            session,
+            buyer_order.user_id,
+            seller_order.user_id,
+            order1.ticker,
+            qty,
+            seller_order.price
+        )
+
+    def _update_balances(
+        self,
+        session: Session,
+        buyer_id: UUID,
+        seller_id: UUID,
+        ticker: str,
+        qty: int,
+        price: int
+    ) -> None:
+        """Update balances for both parties in a trade."""
+        total_amount = qty * price
+
+        # Обновляем баланс покупателя
+        self._upsert_balance(
+            session,
+            buyer_id,
+            ticker,
+            amount_delta=qty,
+            locked_delta=0
+        )
+        self._upsert_balance(
+            session,
+            buyer_id,
+            "RUB",
+            amount_delta=-total_amount,
+            locked_delta=0
+        )
+
+        # Обновляем баланс продавца
+        self._upsert_balance(
+            session,
+            seller_id,
+            ticker,
+            amount_delta=-qty,
+            locked_delta=0
+        )
+        self._upsert_balance(
+            session,
+            seller_id,
+            "RUB",
+            amount_delta=total_amount,
+            locked_delta=0
+        )
 
     # ---------- streaming, batch-wise market matcher -------------------------
 
@@ -798,83 +816,6 @@ class Database:
                     .first()
                 )
             return o.price if o else None
-
-    def _update_balances(self, session: Session, buyer_id: UUID, seller_id: UUID, ticker: str, qty: int, price: int) -> None:
-        """Обновление балансов после исполнения заявки"""
-        # Списываем деньги у покупателя
-        buyer_balance = session.query(BalanceModel).with_for_update().filter(
-            and_(
-                BalanceModel.user_id == buyer_id,
-                BalanceModel.ticker == "RUB"
-            )
-        ).first()
-
-        if not buyer_balance:
-            buyer_balance = BalanceModel(
-                user_id=buyer_id,
-                ticker="RUB",
-                amount=0,
-                locked_amount=0
-            )
-            session.add(buyer_balance)
-
-        buyer_balance.amount -= qty * price
-
-        # Начисляем деньги продавцу
-        seller_balance = session.query(BalanceModel).with_for_update().filter(
-            and_(
-                BalanceModel.user_id == seller_id,
-                BalanceModel.ticker == "RUB"
-            )
-        ).first()
-
-        if not seller_balance:
-            seller_balance = BalanceModel(
-                user_id=seller_id,
-                ticker="RUB",
-                amount=0,
-                locked_amount=0
-            )
-            session.add(seller_balance)
-
-        seller_balance.amount += qty * price
-
-        # Обновляем балансы по инструменту
-        buyer_instrument_balance = session.query(BalanceModel).with_for_update().filter(
-            and_(
-                BalanceModel.user_id == buyer_id,
-                BalanceModel.ticker == ticker
-            )
-        ).first()
-
-        if not buyer_instrument_balance:
-            buyer_instrument_balance = BalanceModel(
-                user_id=buyer_id,
-                ticker=ticker,
-                amount=0,
-                locked_amount=0
-            )
-            session.add(buyer_instrument_balance)
-
-        buyer_instrument_balance.amount += qty
-
-        seller_instrument_balance = session.query(BalanceModel).with_for_update().filter(
-            and_(
-                BalanceModel.user_id == seller_id,
-                BalanceModel.ticker == ticker
-            )
-        ).first()
-
-        if not seller_instrument_balance:
-            seller_instrument_balance = BalanceModel(
-                user_id=seller_id,
-                ticker=ticker,
-                amount=0,
-                locked_amount=0
-            )
-            session.add(seller_instrument_balance)
-
-        seller_instrument_balance.amount -= qty
 
 
 # Global instance (unchanged signature)
