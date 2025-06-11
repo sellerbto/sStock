@@ -462,7 +462,8 @@ class Database:
 
     def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
         """Исполнение заявок между собой"""
-        price = order2.price  # Используем цену лимитной заявки
+        # Определяем цену исполнения (всегда берем цену лимитной заявки)
+        price = order2.price if order2.direction == Direction.SELL else order1.price
 
         # Определяем покупателя и продавца
         if order1.direction == Direction.BUY:
