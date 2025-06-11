@@ -45,6 +45,9 @@ services:
       volumes:
         - /certs/nginx.crt:/etc/nginx/certs/certificate.crt
         - /certs/nginx.key:/etc/nginx/certs/certificate.key
+      depends_on:
+        app:
+          condition: service_started
 
   jaeger:
       image: jaegertracing/jaeger:2.0.0

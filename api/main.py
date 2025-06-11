@@ -11,7 +11,7 @@ from .models import (
     Instrument, Ok, DepositRequest, WithdrawRequest,
     L2OrderBook, UserRole
 )
-from .database import db, Database, DatabaseError, DatabaseIntegrityError, DatabaseNotFoundError
+from .database import db, Database, DatabaseError, DatabaseIntegrityError, DatabaseNotFoundError, InsufficientAvailableError, CancelError
 from .auth import get_current_user, get_admin_user
 import os
 import uuid
@@ -37,8 +37,6 @@ app = FastAPI(
     version="0.1.0",
 )
 
-FastAPIInstrumentor.instrument_app(app)
-
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
@@ -47,6 +45,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+def _is_whole_number(x) -> bool:
+    """Return True for int or a float that represents a whole number."""
+    return isinstance(x, int) or (isinstance(x, float) and x.is_integer())
+
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="api/static"), name="static")
@@ -59,24 +62,22 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Создаем семафор для ограничения количества параллельных запросов
-ORDER_SEMAPHORE = Semaphore(100)  # Максимум 10 параллельных запросов
-
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     # Получаем API ключ из заголовка
     api_key = request.headers.get("Authorization", "").replace("TOKEN ", "")
-    
+
     # Логируем информацию о запросе
     logger.info(f"Request: {request.method} {request.url.path} - API Key: {api_key}")
-    
+
     # Замеряем время выполнения
     start_time = time.time()
     response = await call_next(request)
     process_time = time.time() - start_time
-    
+
     # Логируем результат
     logger.info(f"Response: {request.method} {request.url.path} - Status: {response.status_code} - Time: {process_time:.2f}s")
-    
+
     return response
 
 @app.exception_handler(HTTPException)
@@ -93,6 +94,10 @@ async def validation_exception_handler(request: Request, exc: ValidationError):
         content={"detail": exc.errors()}
     )
 
+@app.exception_handler(InsufficientAvailableError)
+async def insufficient_available_handler(request: Request, exc: InsufficientAvailableError):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
 @app.exception_handler(DatabaseError)
 async def database_exception_handler(request: Request, exc: DatabaseError):
     if isinstance(exc, DatabaseIntegrityError):
@@ -103,6 +108,11 @@ async def database_exception_handler(request: Request, exc: DatabaseError):
     elif isinstance(exc, DatabaseNotFoundError):
         return JSONResponse(
             status_code=404,
+            content={"detail": str(exc)}
+        )
+    elif isinstance(exc, InsufficientAvailableError):
+        return JSONResponse(
+            status_code=400,
             content={"detail": str(exc)}
         )
     else:
@@ -171,85 +181,87 @@ async def create_order(
     """Создание новой заявки"""
     try:
         # Ожидаем освобождения семафора
-        async with ORDER_SEMAPHORE:
-            logger.info(f"=== Starting POST /api/v1/order request ===")
-            logger.info(f"User: {current_user.name} (ID: {current_user.id})")
-            logger.info(f"Order body data: {order_body.dict()}")
-            
-            # Проверяем существование инструмента
-            instrument = db.get_instrument(order_body.ticker)
-            if not instrument:
-                logger.error(f"Instrument not found: {order_body.ticker}")
-                raise HTTPException(status_code=404, detail=f"Instrument {order_body.ticker} not found")
-            logger.info(f"Instrument found: {instrument.ticker} - {instrument.name}")
+        logger.info(f"=== Starting POST /api/v1/order request ===")
+        logger.info(f"User: {current_user.name} (ID: {current_user.id})")
+        logger.info(f"Order body data: {order_body.dict()}")
 
-            # Получаем баланс пользователя
-            balance = db.get_user_balance(current_user.id)
-            logger.info(f"User balance: {balance}")
+        # Проверяем существование инструмента
+        instrument = db.get_instrument(order_body.ticker)
+        if not instrument:
+            logger.error(f"Instrument not found: {order_body.ticker}")
+            raise HTTPException(status_code=404, detail=f"Instrument {order_body.ticker} not found")
+        logger.info(f"Instrument found: {instrument.ticker} - {instrument.name}")
 
-            # Проверяем баланс
-            if order_body.direction == Direction.SELL:
-                if order_body.ticker not in balance or balance[order_body.ticker] < order_body.qty:
-                    logger.warning(f"Insufficient balance for sell order. Required {order_body.ticker}: {order_body.qty}, Available: {balance.get(order_body.ticker, 0)}")
+        # Получаем баланс пользователя
+        balance = db.get_user_balance(current_user.id)
+        logger.info(f"User balance: {balance}")
+
+        # Проверяем баланс
+        if order_body.direction == Direction.SELL:
+            if order_body.ticker not in balance or balance[order_body.ticker] < order_body.qty:
+                logger.warning(f"Insufficient balance for sell order. Required {order_body.ticker}: {order_body.qty}, Available: {balance.get(order_body.ticker, 0)}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Insufficient balance. Required {order_body.ticker}: {order_body.qty}, Available: {balance.get(order_body.ticker, 0)}"
+                )
+        else:  # BUY
+            if isinstance(order_body, LimitOrderBody):
+                required_rub = order_body.price * order_body.qty
+                if "RUB" not in balance or balance["RUB"] < required_rub:
+                    logger.warning(f"Insufficient RUB balance for limit buy. Required RUB: {required_rub}, Available: {balance.get('RUB', 0)}")
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Insufficient balance. Required {order_body.ticker}: {order_body.qty}, Available: {balance.get(order_body.ticker, 0)}"
+                        detail=f"Insufficient RUB balance. Required: {required_rub}, Available: {balance.get('RUB', 0)}"
                     )
-            else:  # BUY
-                if isinstance(order_body, LimitOrderBody):
-                    required_rub = order_body.price * order_body.qty
-                    if "RUB" not in balance or balance["RUB"] < required_rub:
-                        logger.warning(f"Insufficient RUB balance for limit buy. Required RUB: {required_rub}, Available: {balance.get('RUB', 0)}")
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Insufficient RUB balance. Required: {required_rub}, Available: {balance.get('RUB', 0)}"
-                        )
-                else:  # Market order
-                    best_price = db.get_best_price(order_body.ticker, Direction.BUY)
-                    if best_price is None:
-                        logger.warning(f"No active sell orders found for {order_body.ticker}")
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"No active sell orders found for {order_body.ticker}"
-                        )
-                    required_rub = best_price * order_body.qty
-                    if "RUB" not in balance or balance["RUB"] < required_rub:
-                        logger.warning(f"Insufficient RUB balance for market buy. Required RUB: {required_rub}, Available: {balance.get('RUB', 0)}")
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Insufficient RUB balance. Required: {required_rub}, Available: {balance.get('RUB', 0)}"
-                        )
+            else:  # Market order
+                best_price = db.get_best_price(order_body.ticker, Direction.BUY)
+                if best_price is None:
+                    logger.warning(f"No active sell orders found for {order_body.ticker}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No active sell orders found for {order_body.ticker}"
+                    )
+                required_rub = best_price * order_body.qty
+                if "RUB" not in balance or balance["RUB"] < required_rub:
+                    logger.warning(f"Insufficient RUB balance for market buy. Required RUB: {required_rub}, Available: {balance.get('RUB', 0)}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Insufficient RUB balance. Required: {required_rub}, Available: {balance.get('RUB', 0)}"
+                    )
 
-            # Создаем заявку
-            current_time = datetime.now(UTC)
-            if isinstance(order_body, MarketOrderBody):
-                logger.info(f"Creating market order")
-                order = MarketOrder(
-                    id=uuid.uuid4(),
-                    status=OrderStatus.NEW,
-                    user_id=current_user.id,
-                    timestamp=current_time,
-                    body=order_body
-                )
-                db.add_market_order(order)
-            else:
-                logger.info(f"Creating limit order")
-                order = LimitOrder(
-                    id=uuid.uuid4(),
-                    status=OrderStatus.NEW,
-                    user_id=current_user.id,
-                    timestamp=current_time,
-                    body=order_body
-                )
-                db.add_limit_order(order)
-
-            logger.info(f"Order created successfully: {order.id}")
-            return CreateOrderResponse(
-                order_id=order.id,
-                success=True,
-                status=order.status
+        # Создаем заявку
+        current_time = datetime.now(UTC)
+        if isinstance(order_body, MarketOrderBody):
+            logger.info(f"Creating market order")
+            order = MarketOrder(
+                id=uuid.uuid4(),
+                status=OrderStatus.NEW,
+                user_id=current_user.id,
+                timestamp=current_time,
+                body=order_body
             )
+            db.add_market_order(order)
+        else:
+            logger.info(f"Creating limit order")
+            order = LimitOrder(
+                id=uuid.uuid4(),
+                status=OrderStatus.NEW,
+                user_id=current_user.id,
+                timestamp=current_time,
+                body=order_body
+            )
+            db.add_limit_order(order)
 
+        logger.info(f"Order created successfully: {order.id}")
+        return CreateOrderResponse(
+            order_id=order.id,
+            success=True,
+            status=order.status
+        )
+
+    except InsufficientAvailableError as e:
+        logger.error(f"Insufficient available error: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
     except ValidationError as e:
         logger.error(f"Validation error: {str(e)}")
         logger.error(f"Validation error details: {e.errors()}")
@@ -268,16 +280,16 @@ async def list_orders(
     try:
         logger.info(f"=== Starting GET /api/v1/order request ===")
         logger.info(f"User: {current_user.name} (ID: {current_user.id})")
-            
+
         logger.info(f"Fetching orders from database")
         orders = db.get_user_orders(current_user.id)
         logger.info(f"Successfully retrieved {len(orders)} orders")
-        
+
         # Логируем детали каждой заявки
         for order in orders:
             logger.info(f"Order: id={order.id}, status={order.status}, ticker={order.body.ticker}, "
                        f"direction={order.body.direction}, qty={order.body.qty}")
-            
+
         logger.info(f"=== Completed GET /api/v1/order request ===")
         return orders
     except HTTPException:
@@ -353,11 +365,11 @@ async def delete_user(
         user = db.get_user_by_id(user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        
+
         # Проверяем, что пользователь не пытается удалить сам себя
         if user.id == current_user.id:
             raise HTTPException(status_code=400, detail="Cannot delete yourself")
-        
+
         db.delete_user(user_id)
         return user
     except HTTPException:
@@ -373,7 +385,7 @@ async def add_instrument(
     """Добавление нового торгового инструмента"""
     try:
         logger.info(f"Attempting to add instrument: {instrument.ticker} by user {current_user.name}")
-        
+
         # Проверяем, что тикер и название не пустые
         if not instrument.ticker.strip():
             logger.warning(f"Empty ticker provided by user {current_user.name}")
@@ -381,17 +393,17 @@ async def add_instrument(
         if not instrument.name.strip():
             logger.warning(f"Empty name provided for ticker {instrument.ticker} by user {current_user.name}")
             raise HTTPException(status_code=400, detail="Name cannot be empty")
-            
+
         # Проверяем, что тикер содержит только буквы и цифры
         if not instrument.ticker.isalnum():
             logger.warning(f"Invalid ticker format: {instrument.ticker} by user {current_user.name}")
             raise HTTPException(status_code=400, detail="Ticker must contain only letters and numbers")
-            
+
         # Проверяем, что инструмент еще не существует
         if db.get_instrument(instrument.ticker):
             logger.warning(f"Attempt to add existing instrument: {instrument.ticker} by user {current_user.name}")
             raise HTTPException(status_code=400, detail="Instrument already exists")
-        
+
         db.add_instrument(instrument)
         logger.info(f"Successfully added instrument: {instrument.ticker} by user {current_user.name}")
         return Ok()
@@ -410,13 +422,13 @@ async def delete_instrument(
     try:
         if not ticker.strip():
             raise HTTPException(status_code=400, detail="Ticker cannot be empty")
-            
+
         if not ticker.isalnum():
             raise HTTPException(status_code=400, detail="Ticker must contain only letters and numbers")
-        
+
         if not db.get_instrument(ticker):
             raise HTTPException(status_code=404, detail="Instrument not found")
-            
+
         db.delete_instrument(ticker)
         return Ok()
     except HTTPException:
@@ -469,29 +481,30 @@ async def withdraw_balance(
         logger.info(f"Withdraw request: {request.dict()}")
 
         # Для RUB проверяем, что это целое число
-        if request.ticker == "RUB" and not request.amount.is_integer():
-            raise HTTPException(status_code=400, detail="RUB amount must be integer")
+        if request.ticker == "RUB" and not _is_whole_number(request.amount):
+            raise HTTPException(status_code=400,
+                                detail=f"{request.ticker} amount must be integer")
 
         # Проверяем существование пользователя
         user = db.get_user_by_id(request.user_id)
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-            
+
         if request.amount <= 0:
             raise HTTPException(status_code=400, detail="Amount must be positive")
-            
+
         if request.ticker == "USD" and not request.amount.is_integer():
             raise HTTPException(status_code=400, detail="USD amount must be integer")
-            
-        balance = db.get_balance(request.user_id)
-        available_amount = balance.balances.get(request.ticker, 0)
-        
+
+        balance = db.get_user_balance(request.user_id)
+        available_amount = balance.get(request.ticker, 0)
+
         if available_amount < request.amount:
             raise HTTPException(
                 status_code=400,
                 detail=f"Insufficient balance. Available: {available_amount}, requested: {request.amount}"
             )
-        
+
         db.withdraw_balance(request.user_id, request.ticker, request.amount)
         logger.info(f"Balance updated successfully for user {user.name}")
         return Ok()
@@ -515,13 +528,13 @@ async def get_orderbook(ticker: str, limit: int = Query(default=10, le=25)):
     try:
         if not ticker.strip():
             raise HTTPException(status_code=400, detail="Ticker cannot be empty")
-            
+
         if not ticker.isalnum():
             raise HTTPException(status_code=400, detail="Ticker must contain only letters and numbers")
-            
+
         if not db.get_instrument(ticker):
             raise HTTPException(status_code=404, detail="Instrument not found")
-            
+
         return db.get_orderbook(ticker, limit)
     except HTTPException:
         raise
@@ -534,13 +547,13 @@ async def get_transactions(ticker: str):
     try:
         if not ticker.strip():
             raise HTTPException(status_code=400, detail="Ticker cannot be empty")
-            
+
         if not ticker.isalnum():
             raise HTTPException(status_code=400, detail="Ticker must contain only letters and numbers")
-            
+
         if not db.get_instrument(ticker):
             raise HTTPException(status_code=404, detail="Instrument not found")
-            
+
         return db.get_transactions(ticker)
     except HTTPException:
         raise
@@ -587,6 +600,8 @@ async def cancel_order(order_id: uuid.UUID, current_user: User = Depends(get_cur
         # Здесь предполагается, что отмена меняет статус заявки на CANCELLED
         db.cancel_order(order_id)
         return Ok()
+    except CancelError:
+        raise HTTPException(status_code=400, detail="Order already cancelled")
     except HTTPException:
         raise
     except Exception as e:
