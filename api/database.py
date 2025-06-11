@@ -34,8 +34,16 @@ class CancelError(DatabaseError):
 
 class Database:
     def __init__(self, connection_string: str):
-        self.engine = create_engine(connection_string)
-        self.SessionLocal = sessionmaker(bind=self.engine)
+        self.engine = create_engine(
+              connection_string,
+              pool_size=20,          # tune for workload
+              max_overflow=40,
+              pool_pre_ping=True,
+              future=True,
+          )
+          # Keep ORM instances alive after commit – avoids reloads
+        self.SessionLocal = sessionmaker(bind=self.engine, expire_on_commit=False)
+          # You may want to move this into migrations in production
         Base.metadata.create_all(self.engine)
 
     @contextmanager
