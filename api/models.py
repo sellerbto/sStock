@@ -238,13 +238,15 @@ class ExecutionModel(Base):
     # Связь с основной заявкой
     order = relationship(
         "OrderModel",
-        foreign_keys=[order_id]
+        foreign_keys=[order_id],
+        overlaps="executions"
     )
     
     # Связь с контрагентской заявкой
     counterparty_order = relationship(
         "OrderModel",
-        foreign_keys=[counterparty_order_id]
+        foreign_keys=[counterparty_order_id],
+        overlaps="counterparty_executions"
     )
 
 class InstrumentModel(Base):

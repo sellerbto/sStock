@@ -382,67 +382,62 @@ class Database:
     # match engine helpers ----------------------------------------------------
 
     def execute_limit_order(self, session: Session, order: OrderModel) -> None:
-        try:
-            remaining_to_fill = order.quantity - self.get_filled_quantity(session, order.id)
+        logger.info(f"Executing limit order: id={order.id}, direction={order.direction}, price={order.price}, qty={order.quantity}")
+        remaining_to_fill = order.quantity
+        filled_map = self._bulk_filled_qty(session, [str(order.id)])
 
-            # candidate query (ordered inside Postgres, skip_locked to reduce contention)
-            if order.direction == Direction.BUY:
-                opp_q = (
-                    session.query(OrderModel)
-                    .filter(
-                        OrderModel.ticker == order.ticker,
-                        OrderModel.direction == Direction.SELL,
-                        OrderModel.price <= order.price,
-                        OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-                        OrderModel.id != order.id,
-                    )
-                    .order_by(OrderModel.price.asc(), OrderModel.created_at.asc())
-                    .with_for_update(skip_locked=True)
+        if order.direction == Direction.BUY:
+            opp_q = (
+                session.query(OrderModel)
+                .filter(
+                    OrderModel.ticker == order.ticker,
+                    OrderModel.direction == Direction.SELL,
+                    OrderModel.price <= order.price,
+                    OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+                    OrderModel.id != order.id,
                 )
-            else:
-                opp_q = (
-                    session.query(OrderModel)
-                    .filter(
-                        OrderModel.ticker == order.ticker,
-                        OrderModel.direction == Direction.BUY,
-                        OrderModel.price >= order.price,
-                        OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
-                        OrderModel.id != order.id,
-                    )
-                    .order_by(OrderModel.price.desc(), OrderModel.created_at.asc())
-                    .with_for_update(skip_locked=True)
+                .order_by(OrderModel.price.asc(), OrderModel.created_at.asc())
+                .with_for_update(skip_locked=True)
+            )
+        else:
+            opp_q = (
+                session.query(OrderModel)
+                .filter(
+                    OrderModel.ticker == order.ticker,
+                    OrderModel.direction == Direction.BUY,
+                    OrderModel.price >= order.price,
+                    OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+                    OrderModel.id != order.id,
                 )
-
-            candidates: list[OrderModel] = opp_q.all()
-            filled_map = self._bulk_filled_qty(
-                session, [str(o.id) for o in candidates] + [str(order.id)]
+                .order_by(OrderModel.price.desc(), OrderModel.created_at.asc())
+                .with_for_update(skip_locked=True)
             )
 
-            for other in candidates:
-                if remaining_to_fill <= 0:
-                    break
+        candidates: list[OrderModel] = opp_q.all()
+        filled_map.update(self._bulk_filled_qty(session, [str(o.id) for o in candidates]))
 
-                other_remaining = other.quantity - filled_map.get(str(other.id), 0)
-                if other_remaining <= 0:
-                    continue
+        for other in candidates:
+            if remaining_to_fill <= 0:
+                break
 
-                qty = min(remaining_to_fill, other_remaining)
-                self._execute_orders(session, order, other, qty)
+            other_remaining = other.quantity - filled_map.get(str(other.id), 0)
+            if other_remaining <= 0:
+                continue
 
-                filled_map[str(other.id)] = filled_map.get(str(other.id), 0) + qty
-                remaining_to_fill -= qty
+            qty = min(remaining_to_fill, other_remaining)
+            self._execute_orders(session, order, other, qty)
 
-            already_filled = order.quantity - remaining_to_fill
-            order.status = (
-                OrderStatus.NEW
-                if already_filled == 0
-                else OrderStatus.PARTIALLY_EXECUTED
-                if already_filled < order.quantity
-                else OrderStatus.EXECUTED
-            )
-        except Exception as e:
-            logger.error(f"Error executing limit order {order.id}: {str(e)}")
-            raise
+            filled_map[str(other.id)] = filled_map.get(str(other.id), 0) + qty
+            remaining_to_fill -= qty
+
+        already_filled = order.quantity - remaining_to_fill
+        order.status = (
+            OrderStatus.NEW
+            if already_filled == 0
+            else OrderStatus.PARTIALLY_EXECUTED
+            if already_filled < order.quantity
+            else OrderStatus.EXECUTED
+        )
 
     def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
         try:
