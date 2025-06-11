@@ -36,7 +36,7 @@ class Database:
     def __init__(self, connection_string: str):
         self.engine = create_engine(
               connection_string,
-              pool_size=20,          # tune for workload
+              pool_size=60,          # tune for workload
               max_overflow=40,
               pool_pre_ping=True,
               future=True,
