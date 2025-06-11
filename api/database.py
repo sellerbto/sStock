@@ -381,22 +381,64 @@ class Database:
     # ------------------------------------------------------------------------
     # match engine helpers ----------------------------------------------------
 
-    def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
-        """Исполнение заявок между собой"""
-        logger.info(f"Executing orders: order1={order1.id} ({order1.direction}, price={order1.price}), order2={order2.id} ({order2.direction}, price={order2.price}), qty={qty}")
+    # def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
+    #     """Исполнение заявок между собой"""
+    #     logger.info(f"Executing orders: order1={order1.id} ({order1.direction}, price={order1.price}), order2={order2.id} ({order2.direction}, price={order2.price}), qty={qty}")
         
-        # Определяем цену исполнения (всегда берем цену лимитной заявки)
+    #     # Определяем цену исполнения (всегда берем цену лимитной заявки)
+    #     price = order2.price if order2.price is not None else order1.price
+    #     logger.info(f"Execution price: {price}")
+
+    #     # Определяем покупателя и продавца
+    #     if order1.direction == Direction.BUY:
+    #         buyer, seller = order1, order2
+    #     else:
+    #         buyer, seller = order2, order1
+    #     logger.info(f"Buyer: {buyer.id}, Seller: {seller.id}")
+
+    #     # Создаем детали исполнения
+    #     execution = ExecutionModel(
+    #         order_id=order1.id,
+    #         counterparty_order_id=order2.id,
+    #         quantity=qty,
+    #         price=price
+    #     )
+    #     session.add(execution)
+    #     logger.info(f"Created execution record: {execution.id}")
+
+    #     # Обновляем балансы
+    #     self._update_balances(session, buyer.user_id, seller.user_id, buyer.ticker, qty, price)
+    #     logger.info("Balances updated")
+
+    #     # Обновляем статусы заявок
+    #     if qty == order1.quantity:
+    #         order1.status = OrderStatus.EXECUTED
+    #         logger.info(f"Order {order1.id} fully executed")
+    #     else:
+    #         order1.status = OrderStatus.PARTIALLY_EXECUTED
+    #         order1.quantity -= qty
+    #         logger.info(f"Order {order1.id} partially executed, remaining: {order1.quantity}")
+
+    #     if qty == order2.quantity:
+    #         order2.status = OrderStatus.EXECUTED
+    #         logger.info(f"Order {order2.id} fully executed")
+    #     else:
+    #         order2.status = OrderStatus.PARTIALLY_EXECUTED
+    #         order2.quantity -= qty
+    #         logger.info(f"Order {order2.id} partially executed, remaining: {order2.quantity}")
+
+    def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
+        logger.info(f"Executing orders: order1={order1.id} ({order1.direction}, price={order1.price}), order2={order2.id} ({order2.direction}, price={order2.price}), qty={qty}")
+
         price = order2.price if order2.price is not None else order1.price
         logger.info(f"Execution price: {price}")
 
-        # Определяем покупателя и продавца
         if order1.direction == Direction.BUY:
             buyer, seller = order1, order2
         else:
             buyer, seller = order2, order1
         logger.info(f"Buyer: {buyer.id}, Seller: {seller.id}")
 
-        # Создаем детали исполнения
         execution = ExecutionModel(
             order_id=order1.id,
             counterparty_order_id=order2.id,
@@ -406,26 +448,27 @@ class Database:
         session.add(execution)
         logger.info(f"Created execution record: {execution.id}")
 
-        # Обновляем балансы
         self._update_balances(session, buyer.user_id, seller.user_id, buyer.ticker, qty, price)
         logger.info("Balances updated")
 
-        # Обновляем статусы заявок
-        if qty == order1.quantity:
-            order1.status = OrderStatus.EXECUTED
-            logger.info(f"Order {order1.id} fully executed")
-        else:
-            order1.status = OrderStatus.PARTIALLY_EXECUTED
-            order1.quantity -= qty
-            logger.info(f"Order {order1.id} partially executed, remaining: {order1.quantity}")
+        filled1 = self.get_filled_quantity(session, order1.id)
+        filled2 = self.get_filled_quantity(session, order2.id)
 
-        if qty == order2.quantity:
-            order2.status = OrderStatus.EXECUTED
-            logger.info(f"Order {order2.id} fully executed")
-        else:
-            order2.status = OrderStatus.PARTIALLY_EXECUTED
-            order2.quantity -= qty
-            logger.info(f"Order {order2.id} partially executed, remaining: {order2.quantity}")
+        order1.status = (
+            OrderStatus.EXECUTED if filled1 >= order1.quantity else
+            OrderStatus.PARTIALLY_EXECUTED if filled1 > 0 else
+            order1.status
+        )
+
+        order2.status = (
+            OrderStatus.EXECUTED if filled2 >= order2.quantity else
+            OrderStatus.PARTIALLY_EXECUTED if filled2 > 0 else
+            order2.status
+        )
+
+        logger.info(f"Order {order1.id} status updated to {order1.status}")
+        logger.info(f"Order {order2.id} status updated to {order2.status}")
+
 
     def execute_limit_order(self, session: Session, order: OrderModel) -> None:
         logger.info(f"Executing limit order: id={order.id}, direction={order.direction}, price={order.price}, qty={order.quantity}")
