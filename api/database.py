@@ -259,35 +259,55 @@ class Database:
             raise DatabaseError(f"Failed to add market order: {e}")
 
     def add_limit_order(self, order: LimitOrder) -> None:
-        try:
-            with self.get_session() as session:
-                inst = session.query(InstrumentModel)\
-                    .filter(InstrumentModel.ticker == order.body.ticker).first()
-                if not inst:
-                    raise DatabaseNotFoundError(f"Instrument {order.body.ticker} not found")
+            """
+            Place a new limit order, locking funds in a fixed order to avoid deadlocks.
+            """
+            try:
+                with self.get_session() as session:
+                    # verify instrument exists
+                    inst = session.query(InstrumentModel)\
+                        .filter(InstrumentModel.ticker == order.body.ticker).first()
+                    if not inst:
+                        raise DatabaseNotFoundError(f"Instrument {order.body.ticker} not found")
 
-                ticker, qty, price = order.body.ticker, order.body.qty, order.body.price
+                    ticker = order.body.ticker
+                    qty = order.body.qty
+                    price = order.body.price
 
-                if order.body.direction == Direction.SELL:
-                    self._lock_funds_session(session, order.user_id, ticker, qty)
-                else:
-                    self._lock_funds_session(session, order.user_id, "RUB", qty * price)
+                    # build list of (ticker, amount_to_lock), always RUB first
+                    locks: List[Tuple[str,int]] = []
+                    if order.body.direction == Direction.SELL:
+                        # seller must lock the asset and the cash placeholder (zero)
+                        locks = [("RUB", 0), (ticker, qty)]
+                    else:
+                        # buyer must lock cash = qty * price
+                        locks = [("RUB", qty * price), (ticker, 0)]
 
-                db_o = OrderModel(
-                    id=order.id,
-                    user_id=order.user_id,
-                    ticker=ticker,
-                    direction=order.body.direction,
-                    quantity=qty,
-                    price=price,
-                    status=order.status,
-                    created_at=order.timestamp
-                )
-                session.add(db_o)
-                session.flush()
-                self.execute_limit_order(session, db_o)
-        except InsufficientAvailableError:
-            raise          # propagate as-is (will be caught by the API layer)
+                    # perform locks in the defined order
+                    for tk, amt in locks:
+                        if amt > 0:
+                            self._lock_funds_session(session, order.user_id, tk, amt)
+
+                    # create and insert the limit order
+                    db_o = OrderModel(
+                        id=order.id,
+                        user_id=order.user_id,
+                        ticker=ticker,
+                        direction=order.body.direction,
+                        quantity=qty,
+                        price=price,
+                        status=order.status,
+                        created_at=order.timestamp
+                    )
+                    session.add(db_o)
+                    session.flush()
+
+                    # execute matching (locks inside _update_balances also follow fixed order)
+                    self.execute_limit_order(session, db_o)
+
+            except InsufficientAvailableError:
+                # propagate to API layer for 400 response
+                raise       # propagate as-is (will be caught by the API layer)
 
     def execute_market_order_internal(self, session: Session, order: OrderModel) -> None:
         filled = self.get_filled_quantity(session, order.id)
@@ -439,52 +459,47 @@ class Database:
                 OrderStatus.PARTIALLY_EXECUTED
             )
 
-    def _update_balances(self, session: Session,
-                         buyer_id: UUID, seller_id: UUID,
-                         ticker: str, qty: int, price: int) -> None:
-        cost = qty * price
+    def _update_balances(self,
+                             session: Session,
+                             buyer_id: UUID, seller_id: UUID,
+                             ticker: str, qty: int, price: int) -> None:
+            """
+            Update balances for buyer and seller, locking in RUB→asset order.
+            """
+            cost = qty * price
 
-        # Buyer pays
-        bbal = session.query(BalanceModel).with_for_update().filter(and_(
-            BalanceModel.user_id == str(buyer_id),
-            BalanceModel.ticker == "RUB"
-        )).first()
-        if not bbal:
-            bbal = BalanceModel(user_id=str(buyer_id), ticker="RUB", amount=0, locked_amount=0)
-            session.add(bbal)
-        bbal.amount -= cost
-        bbal.locked_amount -= cost
+            # prepare all (user, ticker, delta_amount, delta_locked) tuples
+            updates = [
+                # buyer: pay cash
+                (buyer_id, "RUB",    -cost,    -cost),
+                # seller: receive cash
+                (seller_id,"RUB",     cost,     0),
+                # buyer: receive asset
+                (buyer_id, ticker,    qty,      0),
+                # seller: give up asset
+                (seller_id, ticker,   -qty,    -qty),
+            ]
 
-        # Seller receives cash
-        sbal = session.query(BalanceModel).with_for_update().filter(and_(
-            BalanceModel.user_id == str(seller_id),
-            BalanceModel.ticker == "RUB"
-        )).first()
-        if not sbal:
-            sbal = BalanceModel(user_id=str(seller_id), ticker="RUB", amount=0, locked_amount=0)
-            session.add(sbal)
-        sbal.amount += cost
-
-        # Buyer receives asset
-        bib = session.query(BalanceModel).with_for_update().filter(and_(
-            BalanceModel.user_id == str(buyer_id),
-            BalanceModel.ticker == ticker
-        )).first()
-        if not bib:
-            bib = BalanceModel(user_id=str(buyer_id), ticker=ticker, amount=0, locked_amount=0)
-            session.add(bib)
-        bib.amount += qty
-
-        # Seller gives up asset
-        sib = session.query(BalanceModel).with_for_update().filter(and_(
-            BalanceModel.user_id == str(seller_id),
-            BalanceModel.ticker == ticker
-        )).first()
-        if not sib:
-            sib = BalanceModel(user_id=str(seller_id), ticker=ticker, amount=0, locked_amount=0)
-            session.add(sib)
-        sib.amount -= qty
-        sib.locked_amount -= qty
+            # perform FOR UPDATE locks in RUB-first order
+            # sort by ticker name ensures RUB (R) before any asset like "MEMECOIN" (M)
+            for uid, tk, delta_amt, delta_locked in sorted(updates, key=lambda x: x[1]):
+                bal = session.query(BalanceModel)\
+                             .with_for_update()\
+                             .filter(and_(
+                                 BalanceModel.user_id == str(uid),
+                                 BalanceModel.ticker == tk
+                             )).first()
+                if not bal:
+                    bal = BalanceModel(
+                        user_id=str(uid),
+                        ticker=tk,
+                        amount=0,
+                        locked_amount=0
+                    )
+                    session.add(bal)
+                # apply changes
+                bal.amount        += delta_amt
+                bal.locked_amount += delta_locked
 
     def get_filled_quantity(self, session: Session, order_id: Union[UUID, str]) -> int:
         key = order_id if isinstance(order_id, UUID) else UUID(order_id)
