@@ -289,24 +289,30 @@ class Database:
                 # Проверяем баланс
                 if order.body.direction == Direction.SELL:
                     # Для продажи проверяем баланс продаваемого инструмента
-                    balance = session.query(BalanceModel).filter(
+                    balance = session.query(BalanceModel).with_for_update().filter(
                         and_(BalanceModel.user_id == str(order.user_id), 
                              BalanceModel.ticker == order.body.ticker)
                     ).first()
-                    if not balance or balance.amount < order.body.qty:
-                        raise InsufficientAvailableError(f"Insufficient {order.body.ticker} balance")
+                    if not balance:
+                        raise InsufficientAvailableError(f"No balance found for {order.body.ticker}")
+                    available = balance.amount - balance.locked_amount
+                    if available < order.body.qty:
+                        raise InsufficientAvailableError(f"Insufficient {order.body.ticker} balance: {available} < {order.body.qty}")
                 else:
                     # Для покупки проверяем баланс RUB
                     best_price = self.get_best_price(order.body.ticker, Direction.SELL)
                     if not best_price:
                         raise DatabaseError("No sell orders available for market buy")
                     required_rub = order.body.qty * best_price
-                    balance = session.query(BalanceModel).filter(
+                    balance = session.query(BalanceModel).with_for_update().filter(
                         and_(BalanceModel.user_id == str(order.user_id), 
                              BalanceModel.ticker == "RUB")
                     ).first()
-                    if not balance or balance.amount < required_rub:
-                        raise InsufficientAvailableError(f"Insufficient RUB balance")
+                    if not balance:
+                        raise InsufficientAvailableError("No RUB balance found")
+                    available = balance.amount - balance.locked_amount
+                    if available < required_rub:
+                        raise InsufficientAvailableError(f"Insufficient RUB balance: {available} < {required_rub}")
 
                 # Создаем ордер
                 db_o = OrderModel(
