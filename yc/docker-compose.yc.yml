@@ -28,7 +28,7 @@ services:
           timeout: 3s
           retries: 3
     volumes:
-      - postgres_data2:/var/lib/postgresql/data
+      - postgres_data3:/var/lib/postgresql/data
 
   pgadmin:
       container_name: pgadmin
@@ -77,4 +77,4 @@ services:
 
 
 volumes:
-  postgres_data2:
+  postgres_data3:
