@@ -6,6 +6,11 @@ services:
     restart: always
     command: >
       sh -c "alembic upgrade head &&  uvicorn app.main:app --host 0.0.0.0 --port 80 --workers 8"
+    environment:
+    - DATABASE_URL=postgresql://exchange:exchange@db:5432/exchange
+    - SECRET_KEY=dev-secret-key
+    - ADMIN_API_KEY=key-81ce43a7-14fd-45de-9b99-82218228935a
+    - PYTHONPATH=/app
     depends_on:
       db:
         condition: service_healthy
@@ -14,9 +19,9 @@ services:
     image: postgres:16.2-bookworm
     restart: always
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=stock_exchange
+      - POSTGRES_USER=exchange
+      - POSTGRES_PASSWORD=exchange
+      - POSTGRES_DB=exchange
     healthcheck:
           test: [ "CMD-SHELL", "sh -c 'pg_isready -U postgres -d stock_exchange'" ]
           interval: 10s
