@@ -482,10 +482,10 @@ class Database:
         # Создаем запись о сделке
         execution = ExecutionModel(
             order_id=str(buyer_order.id),
-            opposite_order_id=str(seller_order.id),
+            counterparty_order_id=str(seller_order.id),
             quantity=qty,
             price=seller_order.price,
-            timestamp=datetime.now(UTC)
+            executed_at=datetime.now(UTC)
         )
         session.add(execution)
 
