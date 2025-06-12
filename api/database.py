@@ -522,21 +522,29 @@ class Database:
         amount_delta: int,
         locked_delta: int
     ) -> None:
-        """Atomically update or create a balance record."""
-        # Используем INSERT ... ON CONFLICT для атомарного обновления
-        stmt = insert(BalanceModel).values(
-            user_id=str(user_id),
-            ticker=ticker,
-            amount=amount_delta,
-            locked_amount=locked_delta
-        ).on_conflict_do_update(
-            index_elements=['user_id', 'ticker'],
-            set_={
-                'amount': BalanceModel.amount + amount_delta,
-                'locked_amount': BalanceModel.locked_amount + locked_delta
-            }
-        )
-        session.execute(stmt)
+        """Atomically update or create a balance record with deterministic locking order."""
+        # Сначала блокируем запись с помощью SELECT FOR UPDATE
+        # Используем детерминированный порядок блокировки (сначала по user_id, потом по ticker)
+        balance = session.query(BalanceModel).with_for_update(skip_locked=True).filter(
+            and_(
+                BalanceModel.user_id == str(user_id),
+                BalanceModel.ticker == ticker
+            )
+        ).first()
+
+        if balance:
+            # Обновляем существующий баланс
+            balance.amount += amount_delta
+            balance.locked_amount += locked_delta
+        else:
+            # Создаем новый баланс
+            balance = BalanceModel(
+                user_id=str(user_id),
+                ticker=ticker,
+                amount=amount_delta,
+                locked_amount=locked_delta
+            )
+            session.add(balance)
 
     def _update_balances(
         self,
@@ -545,42 +553,57 @@ class Database:
         seller_id: UUID,
         ticker: str,
         qty: int,
-        price: int
+        price: Optional[int]
     ) -> None:
-        """Update balances for both parties in a trade."""
+        """Update balances for both parties in a trade with deterministic locking order."""
+        if price is None:
+            # Для рыночных ордеров используем цену встречного ордера
+            price = self._get_execution_price(session, buyer_id, seller_id, ticker)
+            if price is None:
+                raise DatabaseError("Cannot determine execution price for market order")
+
         total_amount = qty * price
 
-        # Обновляем баланс покупателя
-        self._upsert_balance(
-            session,
-            buyer_id,
-            ticker,
-            amount_delta=qty,
-            locked_delta=0
-        )
-        self._upsert_balance(
-            session,
-            buyer_id,
-            "RUB",
-            amount_delta=-total_amount,
-            locked_delta=0
-        )
+        # Определяем порядок обновления балансов для предотвращения deadlock
+        # Всегда обновляем балансы в одном и том же порядке:
+        # 1. Сначала RUB балансы (по user_id)
+        # 2. Потом балансы инструмента (по user_id)
+        updates = [
+            # RUB балансы
+            (buyer_id, "RUB", -total_amount, 0),
+            (seller_id, "RUB", total_amount, 0),
+            # Балансы инструмента
+            (buyer_id, ticker, qty, 0),
+            (seller_id, ticker, -qty, 0)
+        ]
 
-        # Обновляем баланс продавца
-        self._upsert_balance(
-            session,
-            seller_id,
-            ticker,
-            amount_delta=-qty,
-            locked_delta=0
-        )
-        self._upsert_balance(
-            session,
-            seller_id,
-            "RUB",
-            amount_delta=total_amount,
-            locked_delta=0
-        )
+        # Сортируем обновления для обеспечения детерминированного порядка
+        updates.sort(key=lambda x: (x[1], x[0]))  # Сначала по ticker, потом по user_id
+
+        # Выполняем обновления в отсортированном порядке
+        for user_id, ticker, amount_delta, locked_delta in updates:
+            self._upsert_balance(session, user_id, ticker, amount_delta, locked_delta)
+
+    def _get_execution_price(
+        self,
+        session: Session,
+        buyer_id: UUID,
+        seller_id: UUID,
+        ticker: str
+    ) -> Optional[int]:
+        """Get the execution price for a market order."""
+        # Ищем встречный ордер с ценой
+        opposite_order = session.query(OrderModel).filter(
+            and_(
+                OrderModel.ticker == ticker,
+                OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+                OrderModel.price.isnot(None)
+            )
+        ).order_by(
+            OrderModel.price.asc() if OrderModel.direction == Direction.SELL else OrderModel.price.desc()
+        ).first()
+
+        return opposite_order.price if opposite_order else None
 
     def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
         """Execute a trade between two orders."""
@@ -592,12 +615,25 @@ class Database:
             buyer_order = order2
             seller_order = order1
 
+        # Получаем цену исполнения
+        execution_price = seller_order.price
+        if execution_price is None:
+            # Для рыночных ордеров используем цену встречного ордера
+            execution_price = self._get_execution_price(
+                session,
+                buyer_order.user_id,
+                seller_order.user_id,
+                order1.ticker
+            )
+            if execution_price is None:
+                raise DatabaseError("Cannot determine execution price for market order")
+
         # Создаем запись о сделке
         execution = ExecutionModel(
             order_id=str(buyer_order.id),
             counterparty_order_id=str(seller_order.id),
             quantity=qty,
-            price=seller_order.price,
+            price=execution_price,
             executed_at=datetime.now(UTC)
         )
         session.add(execution)
@@ -609,7 +645,7 @@ class Database:
             seller_order.user_id,
             order1.ticker,
             qty,
-            seller_order.price
+            execution_price
         )
 
     # ---------- streaming, batch-wise market matcher -------------------------
