@@ -1,3 +1,0 @@
-"""
-Stock Exchange Trading Platform
-"""

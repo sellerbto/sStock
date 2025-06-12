@@ -1,62 +1,35 @@
 version: '3.8'
 
 services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://exchange:exchange@db:5432/exchange
+      - SECRET_KEY=dev-secret-key
+      - ADMIN_API_KEY=dev-admin-key
+      - PYTHONPATH=/app
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
   db:
     image: postgres:15
     environment:
-      POSTGRES_DB: stock_exchange
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
+      - POSTGRES_USER=exchange
+      - POSTGRES_PASSWORD=exchange
+      - POSTGRES_DB=exchange
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    pull_policy: never
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U exchange"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  api:
-    build:
-      context: .
-      dockerfile: api/Dockerfile
-      cache_from:
-        - python:3.11-slim
-    ports:
-      - "8000:8000"
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/stock_exchange
-    volumes:
-      - ./api:/app/api:delegated
-      - ./api/migrations:/app/api/migrations:delegated
-      - api_python_cache:/root/.cache/pip
-    tmpfs:
-      - /tmp
-      - /var/tmp
-
-  jaeger:
-    image: jaegertracing/jaeger:2.0.0
-    container_name: jaeger
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
-    ports:
-      - "5778:5778"
-      - "16686:16686"
-      - "4317:4317"
-      - "4318:4318"
-      - "14250:14250"
-      - "14268:14268"
-      - "9411:9411"
-    command:
-      - --set
-      - receivers.otlp.protocols.http.endpoint=0.0.0.0:4318
-      - --set
-      - receivers.otlp.protocols.grpc.endpoint=0.0.0.0:4317
-
 volumes:
-  postgres_data:
-  api_python_cache: 
+  postgres_data: 
