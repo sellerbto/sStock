@@ -90,6 +90,8 @@ class Database:
     def get_session(self):
         session = self.SessionLocal()
         try:
+            # Устанавливаем уровень изоляции SERIALIZABLE для предотвращения deadlock
+            session.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
             yield session
             session.commit()
         except IntegrityError as e:
@@ -98,9 +100,9 @@ class Database:
         except SQLAlchemyError as e:
             session.rollback()
             raise DatabaseError(str(e))
-        except InsufficientAvailableError:              # 👈 pass through unchanged
-               session.rollback()
-               raise
+        except InsufficientAvailableError:
+            session.rollback()
+            raise
         except CancelError:
             session.rollback()
             raise
@@ -523,28 +525,26 @@ class Database:
         locked_delta: int
     ) -> None:
         """Atomically update or create a balance record with deterministic locking order."""
-        # Сначала блокируем запись с помощью SELECT FOR UPDATE
-        # Используем детерминированный порядок блокировки (сначала по user_id, потом по ticker)
-        balance = session.query(BalanceModel).with_for_update(skip_locked=True).filter(
-            and_(
-                BalanceModel.user_id == str(user_id),
-                BalanceModel.ticker == ticker
+        with session.no_autoflush:
+            # Используем SELECT FOR UPDATE NOWAIT для немедленной ошибки вместо ожидания
+            stmt = (
+                insert(BalanceModel)
+                .values(
+                    user_id=str(user_id),
+                    ticker=ticker,
+                    amount=amount_delta,
+                    locked_amount=locked_delta,
+                )
+                .on_conflict_do_update(
+                    index_elements=["user_id", "ticker"],
+                    set_={
+                        "amount": BalanceModel.amount + amount_delta,
+                        "locked_amount": BalanceModel.locked_amount + locked_delta,
+                    },
+                )
             )
-        ).first()
-
-        if balance:
-            # Обновляем существующий баланс
-            balance.amount += amount_delta
-            balance.locked_amount += locked_delta
-        else:
-            # Создаем новый баланс
-            balance = BalanceModel(
-                user_id=str(user_id),
-                ticker=ticker,
-                amount=amount_delta,
-                locked_amount=locked_delta
-            )
-            session.add(balance)
+            session.execute(stmt)
+            session.flush()
 
     def _update_balances(
         self,
@@ -557,17 +557,15 @@ class Database:
     ) -> None:
         """Update balances for both parties in a trade with deterministic locking order."""
         if price is None:
-            # Для рыночных ордеров используем цену встречного ордера
             price = self._get_execution_price(session, buyer_id, seller_id, ticker)
             if price is None:
                 raise DatabaseError("Cannot determine execution price for market order")
 
         total_amount = qty * price
 
-        # Определяем порядок обновления балансов для предотвращения deadlock
-        # Всегда обновляем балансы в одном и том же порядке:
-        # 1. Сначала RUB балансы (по user_id)
-        # 2. Потом балансы инструмента (по user_id)
+        # Сортируем обновления для обеспечения детерминированного порядка
+        # Сначала обновляем RUB балансы, затем балансы инструмента
+        # Внутри каждой группы сортируем по user_id
         updates = [
             # RUB балансы
             (buyer_id, "RUB", -total_amount, 0),
@@ -578,7 +576,8 @@ class Database:
         ]
 
         # Сортируем обновления для обеспечения детерминированного порядка
-        updates.sort(key=lambda x: (x[1], x[0]))  # Сначала по ticker, потом по user_id
+        # Сначала по ticker (RUB всегда первый), затем по user_id
+        updates.sort(key=lambda x: (x[1] != "RUB", x[0]))
 
         # Выполняем обновления в отсортированном порядке
         for user_id, ticker, amount_delta, locked_delta in updates:
