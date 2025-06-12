@@ -4,7 +4,8 @@ services:
   app:
     image: {{ env.API_IMAGE }}
     restart: always
-    command: uvicorn api.main:app --host 0.0.0.0 --port 80 --workers 8 --proxy-headers --forwarded-allow-ips="*"
+    command: >
+      sh -c "alembic upgrade head &&  uvicorn api.main:app --host 0.0.0.0 --port 80 --workers 8"
     depends_on:
       db:
         condition: service_healthy
@@ -22,7 +23,7 @@ services:
           timeout: 3s
           retries: 3
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data2:/var/lib/postgresql/data
 
   pgadmin:
       container_name: pgadmin
@@ -71,4 +72,4 @@ services:
 
 
 volumes:
-  postgres_data:
+  postgres_data2:
