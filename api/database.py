@@ -514,35 +514,29 @@ class Database:
         )
         return {oid: qty for oid, qty in rows}
 
-    def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
-        """Execute a trade between two orders."""
-        # Определяем покупателя и продавца
-        if order1.direction == Direction.BUY:
-            buyer_order = order1
-            seller_order = order2
-        else:
-            buyer_order = order2
-            seller_order = order1
-
-        # Создаем запись о сделке
-        execution = ExecutionModel(
-            order_id=str(buyer_order.id),
-            counterparty_order_id=str(seller_order.id),
-            quantity=qty,
-            price=seller_order.price,
-            executed_at=datetime.now(UTC)
+    def _upsert_balance(
+        self,
+        session: Session,
+        user_id: UUID,
+        ticker: str,
+        amount_delta: int,
+        locked_delta: int
+    ) -> None:
+        """Atomically update or create a balance record."""
+        # Используем INSERT ... ON CONFLICT для атомарного обновления
+        stmt = insert(BalanceModel).values(
+            user_id=str(user_id),
+            ticker=ticker,
+            amount=amount_delta,
+            locked_amount=locked_delta
+        ).on_conflict_do_update(
+            index_elements=['user_id', 'ticker'],
+            set_={
+                'amount': BalanceModel.amount + amount_delta,
+                'locked_amount': BalanceModel.locked_amount + locked_delta
+            }
         )
-        session.add(execution)
-
-        # Обновляем балансы
-        self._update_balances(
-            session,
-            buyer_order.user_id,
-            seller_order.user_id,
-            order1.ticker,
-            qty,
-            seller_order.price
-        )
+        session.execute(stmt)
 
     def _update_balances(
         self,
@@ -586,6 +580,36 @@ class Database:
             "RUB",
             amount_delta=total_amount,
             locked_delta=0
+        )
+
+    def _execute_orders(self, session: Session, order1: OrderModel, order2: OrderModel, qty: int) -> None:
+        """Execute a trade between two orders."""
+        # Определяем покупателя и продавца
+        if order1.direction == Direction.BUY:
+            buyer_order = order1
+            seller_order = order2
+        else:
+            buyer_order = order2
+            seller_order = order1
+
+        # Создаем запись о сделке
+        execution = ExecutionModel(
+            order_id=str(buyer_order.id),
+            counterparty_order_id=str(seller_order.id),
+            quantity=qty,
+            price=seller_order.price,
+            executed_at=datetime.now(UTC)
+        )
+        session.add(execution)
+
+        # Обновляем балансы
+        self._update_balances(
+            session,
+            buyer_order.user_id,
+            seller_order.user_id,
+            order1.ticker,
+            qty,
+            seller_order.price
         )
 
     # ---------- streaming, batch-wise market matcher -------------------------
