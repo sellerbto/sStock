@@ -48,11 +48,6 @@ jobs:
         env:
           CR_REGISTRY: ${{ secrets.YC_CR_REGISTRY }}
           IMAGE_TAG: ${{ github.sha }}
-          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          SECRET_KEY: ${{ secrets.SECRET_KEY }}
           YC_VM_SSH: ${{ secrets.YC_VM_SSH }}
           YC_VM_USERNAME: ${{ secrets.YC_VM_USERNAME }}
           API_IMAGE: cr.yandex/${{ secrets.YC_CR_REGISTRY }}/${{ secrets.YC_CR_REPOSITORY_API }}:${{ github.sha }}
