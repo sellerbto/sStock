@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, and_, func
+from sqlalchemy import create_engine, and_, func, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from contextlib import contextmanager
@@ -91,7 +91,7 @@ class Database:
         session = self.SessionLocal()
         try:
             # Устанавливаем уровень изоляции READ COMMITTED для предотвращения deadlock
-            session.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+            session.execute(text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED"))
             yield session
             session.commit()
         except IntegrityError as e:
