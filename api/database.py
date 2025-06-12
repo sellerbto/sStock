@@ -90,8 +90,8 @@ class Database:
     def get_session(self):
         session = self.SessionLocal()
         try:
-            # Устанавливаем уровень изоляции SERIALIZABLE для предотвращения deadlock
-            session.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
+            # Устанавливаем уровень изоляции READ COMMITTED для предотвращения deadlock
+            session.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
             yield session
             session.commit()
         except IntegrityError as e:
