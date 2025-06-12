@@ -278,10 +278,35 @@ class Database:
     def add_market_order(self, order: MarketOrder) -> None:
         try:
             with self.get_session() as session:
+                # Проверяем существование инструмента
                 inst = session.query(InstrumentModel)\
                     .filter(InstrumentModel.ticker == order.body.ticker).first()
                 if not inst:
                     raise DatabaseNotFoundError(f"Instrument {order.body.ticker} not found")
+
+                # Проверяем баланс
+                if order.body.direction == Direction.SELL:
+                    # Для продажи проверяем баланс продаваемого инструмента
+                    balance = session.query(BalanceModel).filter(
+                        and_(BalanceModel.user_id == str(order.user_id), 
+                             BalanceModel.ticker == order.body.ticker)
+                    ).first()
+                    if not balance or balance.amount < order.body.qty:
+                        raise InsufficientAvailableError(f"Insufficient {order.body.ticker} balance")
+                else:
+                    # Для покупки проверяем баланс RUB
+                    best_price = self.get_best_price(order.body.ticker, Direction.SELL)
+                    if not best_price:
+                        raise DatabaseError("No sell orders available for market buy")
+                    required_rub = order.body.qty * best_price
+                    balance = session.query(BalanceModel).filter(
+                        and_(BalanceModel.user_id == str(order.user_id), 
+                             BalanceModel.ticker == "RUB")
+                    ).first()
+                    if not balance or balance.amount < required_rub:
+                        raise InsufficientAvailableError(f"Insufficient RUB balance")
+
+                # Создаем ордер
                 db_o = OrderModel(
                     id=order.id,
                     user_id=str(order.user_id),
@@ -294,63 +319,83 @@ class Database:
                 )
                 session.add(db_o)
                 session.flush()
+
+                # Блокируем средства
+                if order.body.direction == Direction.BUY:
+                    self._lock_funds_session(session, order.user_id, "RUB", required_rub)
+                else:
+                    self._lock_funds_session(session, order.user_id, order.body.ticker, order.body.qty)
+
+                # Исполняем ордер
                 self.execute_market_order_internal(session, db_o)
+
         except Exception as e:
             raise DatabaseError(f"Failed to add market order: {e}")
 
     def add_limit_order(self, order: LimitOrder) -> None:
-            """
-            Place a new limit order, locking funds in a deterministic order
-            (always RUB first, then the asset) to avoid deadlock.
-            """
-            try:
-                with self.get_session() as session:
-                    # Ensure instrument exists
-                    inst = (
-                        session.query(InstrumentModel)
-                               .filter(InstrumentModel.ticker == order.body.ticker)
-                               .first()
-                    )
-                    if not inst:
-                        raise DatabaseNotFoundError(
-                            f"Instrument {order.body.ticker} not found"
-                        )
+        try:
+            with self.get_session() as session:
+                # Проверяем существование инструмента
+                inst = session.query(InstrumentModel)\
+                    .filter(InstrumentModel.ticker == order.body.ticker).first()
+                if not inst:
+                    raise DatabaseNotFoundError(f"Instrument {order.body.ticker} not found")
 
-                    ticker = order.body.ticker
-                    qty    = order.body.qty
-                    price  = order.body.price
+                ticker = order.body.ticker
+                qty = order.body.qty
+                price = order.body.price
 
-                    # Determine amounts to lock for each ticker
-                    to_lock = {
-                        "RUB":   (order.body.direction == Direction.BUY)  and (qty * price) or 0,
-                        ticker: (order.body.direction == Direction.SELL) and qty           or 0,
-                    }
+                # Проверяем баланс
+                if order.body.direction == Direction.SELL:
+                    # Для продажи проверяем баланс продаваемого инструмента
+                    balance = session.query(BalanceModel).filter(
+                        and_(BalanceModel.user_id == str(order.user_id), 
+                             BalanceModel.ticker == ticker)
+                    ).first()
+                    if not balance or balance.amount < qty:
+                        raise InsufficientAvailableError(f"Insufficient {ticker} balance")
+                else:
+                    # Для покупки проверяем баланс RUB
+                    required_rub = qty * price
+                    balance = session.query(BalanceModel).filter(
+                        and_(BalanceModel.user_id == str(order.user_id), 
+                             BalanceModel.ticker == "RUB")
+                    ).first()
+                    if not balance or balance.amount < required_rub:
+                        raise InsufficientAvailableError(f"Insufficient RUB balance")
 
-                    # Lock in fixed order: RUB first, then any asset
-                    for tk, amt in sorted(to_lock.items(), key=lambda x: (x[0] != "RUB")):
-                        if amt > 0:
-                            self._lock_funds_session(session, order.user_id, tk, amt)
+                # Определяем суммы для блокировки
+                to_lock = {
+                    "RUB": (order.body.direction == Direction.BUY) and (qty * price) or 0,
+                    ticker: (order.body.direction == Direction.SELL) and qty or 0,
+                }
 
-                    # Create and persist the order
-                    db_o = OrderModel(
-                        id=order.id,
-                        user_id=order.user_id,
-                        ticker=ticker,
-                        direction=order.body.direction,
-                        quantity=qty,
-                        price=price,
-                        status=order.status,
-                        created_at=order.timestamp
-                    )
-                    session.add(db_o)
-                    session.flush()
+                # Блокируем средства в фиксированном порядке
+                for tk, amt in sorted(to_lock.items(), key=lambda x: (x[0] != "RUB")):
+                    if amt > 0:
+                        self._lock_funds_session(session, order.user_id, tk, amt)
 
-                    # Attempt matching and execution
-                    self.execute_limit_order(session, db_o)
+                # Создаем ордер
+                db_o = OrderModel(
+                    id=order.id,
+                    user_id=str(order.user_id),
+                    ticker=ticker,
+                    direction=order.body.direction,
+                    quantity=qty,
+                    price=price,
+                    status=order.status,
+                    created_at=order.timestamp
+                )
+                session.add(db_o)
+                session.flush()
 
-            except InsufficientAvailableError:
-                # Propagate to the API layer for an appropriate 400 response
-                raise
+                # Исполняем ордер
+                self.execute_limit_order(session, db_o)
+
+        except InsufficientAvailableError:
+            raise
+        except Exception as e:
+            raise DatabaseError(f"Failed to add limit order: {e}")
 
     def execute_limit_order(self, session: Session, order: OrderModel) -> None:
         remaining_to_fill = order.quantity - self.get_filled_quantity(session, order.id)
