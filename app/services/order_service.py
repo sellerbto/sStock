@@ -86,7 +86,13 @@ async def create_order(
 
 async def cancel_order(db: Session, order_id: UUID, user_id: UUID):
     """Отмена ордера"""
-    order = await get_order(db, order_id, user_id)
+    # Получаем ордер напрямую из базы данных
+    order = db.query(OrderModel).filter(OrderModel.id == order_id).first()
+    if not order:
+        raise HTTPException(status_code=404, detail="Ордер не найден")
+    
+    if order.user_id != user_id:
+        raise HTTPException(status_code=403, detail="Нет доступа к ордеру")
     
     # Рыночные ордера нельзя отменять
     if order.price is None:
