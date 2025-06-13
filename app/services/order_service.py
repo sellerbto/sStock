@@ -88,7 +88,12 @@ async def cancel_order(db: Session, order_id: UUID, user_id: UUID):
     """Отмена ордера"""
     order = await get_order(db, order_id, user_id)
     
-    if order.status not in [OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]:
+    # Рыночные ордера нельзя отменять
+    if order.price is None:
+        raise HTTPException(status_code=400, detail="Рыночный ордер нельзя отменить")
+    
+    # Можно отменять только новые ордера
+    if order.status != OrderStatus.NEW:
         raise HTTPException(status_code=400, detail="Ордер нельзя отменить")
     
     order.status = OrderStatus.CANCELLED
@@ -211,7 +216,7 @@ async def try_execute_order(db: Session, order: OrderModel):
     opposite_orders = db.query(OrderModel).filter(
         OrderModel.ticker == order.ticker,
         OrderModel.direction == opposite_direction,
-        OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
+        OrderModel.status == OrderStatus.NEW,  # Только новые ордера
         OrderModel.user_id != order.user_id  # Исключаем ордера того же пользователя
     )
     
@@ -230,6 +235,17 @@ async def try_execute_order(db: Session, order: OrderModel):
     # Проверяем наличие встречных ордеров для рыночного ордера
     if order.price is None and not opposite_orders.first():
         raise HTTPException(status_code=400, detail="Нет встречных ордеров для исполнения")
+    
+    # Проверяем возможность исполнения
+    if order.direction == Direction.BUY:
+        # Для покупки проверяем баланс RUB
+        required_rub = remaining_qty * (order.price or opposite_orders.first().price)
+        if not await balance_service.check_balance(db, order.user_id, "RUB", required_rub):
+            raise HTTPException(status_code=400, detail="Недостаточно средств в RUB")
+    else:
+        # Для продажи проверяем баланс токенов
+        if not await balance_service.check_balance(db, order.user_id, order.ticker, remaining_qty):
+            raise HTTPException(status_code=400, detail=f"Недостаточно средств в {order.ticker}")
     
     for opposite_order in opposite_orders:
         if remaining_qty == 0:
