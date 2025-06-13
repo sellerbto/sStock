@@ -140,6 +140,7 @@ def downgrade() -> None:
     """
     Откат миграции:
     1. Удаление таблиц в правильном порядке
+    2. Удаление enum типов
     """
     # Удаляем таблицы внутри транзакции
     with op.get_context().begin_transaction():
@@ -157,3 +158,8 @@ def downgrade() -> None:
         op.drop_table('balances')
         op.drop_table('instruments')
         op.drop_table('users')
+        
+        # Удаляем enum типы
+        op.execute('DROP TYPE IF EXISTS user_role')
+        op.execute('DROP TYPE IF EXISTS direction')
+        op.execute('DROP TYPE IF EXISTS order_status')
