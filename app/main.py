@@ -22,21 +22,26 @@ async def init_base_instruments():
     """Инициализация базовых инструментов"""
     try:
         db: Session = next(get_db())
-        # Проверяем существование RUB
-        rub = db.query(Instrument).filter(Instrument.ticker == "RUB").first()
-        if not rub:
-            logger.info("[INIT] Creating base currency RUB")
-            # Используем прямой SQL для вставки
-            db.execute(
-                text("INSERT INTO instruments (ticker, name, is_active) VALUES (:ticker, :name, :is_active)"),
-                {"ticker": "RUB", "name": "Российский рубль", "is_active": True}
-            )
-            db.commit()
-            logger.info("[INIT] Base currency RUB created successfully")
-        else:
-            logger.info("[INIT] Base currency RUB already exists")
+        logger.info("[INIT] Initializing base currency RUB")
+        
+        # Используем UPSERT для безопасного добавления/обновления
+        db.execute(
+            text("""
+                INSERT INTO instruments (ticker, name, is_active)
+                VALUES (:ticker, :name, :is_active)
+                ON CONFLICT (ticker) DO UPDATE
+                SET name = :name, is_active = :is_active
+            """),
+            {
+                "ticker": "RUB",
+                "name": "Российский рубль",
+                "is_active": True
+            }
+        )
+        db.commit()
+        logger.info("[INIT] Base currency RUB initialized successfully")
     except Exception as e:
-        logger.error(f"[INIT] Failed to create base currency RUB: {str(e)}")
+        logger.error(f"[INIT] Failed to initialize base currency RUB: {str(e)}")
         raise
 
 app = FastAPI(
