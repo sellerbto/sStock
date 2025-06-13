@@ -194,6 +194,10 @@ async def get_transaction_history(
 async def try_execute_order(db: Session, order: OrderModel):
     """Попытка исполнить ордер"""
     logger = logging.getLogger(__name__)
+    # Защита от повторного исполнения
+    if order.status in [OrderStatus.EXECUTED, OrderStatus.CANCELLED]:
+        logger.warning(f"[ORDER] Order {order.id} already {order.status}, skipping")
+        return
     logger.info(f"[ORDER] Trying to execute order: id={order.id}, direction={order.direction}, ticker={order.ticker}, qty={order.qty}, price={order.price}")
 
     # Определяем направление для поиска встречных ордеров
@@ -248,7 +252,7 @@ async def try_execute_order(db: Session, order: OrderModel):
             if not await balance_service.check_balance(db, opposite_order.user_id, "RUB", execute_qty * execute_price):
                 logger.error(f"[ORDER] Insufficient RUB balance for buyer: user_id={opposite_order.user_id}, required={execute_qty * execute_price}")
                 continue
-        
+
         try:
             # Создаем транзакцию
             transaction = Transaction(
@@ -278,7 +282,12 @@ async def try_execute_order(db: Session, order: OrderModel):
                 await balance_service.deposit(db, opposite_order.user_id, order.ticker, execute_qty)
             
             # Обновляем ордера
-            order.filled += execute_qty
+            new_filled = order.filled + execute_qty
+            if new_filled > order.qty:
+                logger.error(f"[ORDER] Attempt to fill more than order quantity: order_id={order.id}, current_filled={order.filled}, execute_qty={execute_qty}, total={new_filled}, max={order.qty}")
+                raise HTTPException(status_code=400, detail="Attempt to fill more than order quantity")
+            
+            order.filled = new_filled
             opposite_order.filled += execute_qty
             
             if opposite_order.filled == opposite_order.qty:
