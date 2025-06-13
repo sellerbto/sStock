@@ -88,7 +88,7 @@ async def cancel_order(db: Session, order_id: UUID, user_id: UUID):
     """Отмена ордера"""
     order = await get_order(db, order_id, user_id)
     
-    if order.status != OrderStatus.NEW:
+    if order.status not in [OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]:
         raise HTTPException(status_code=400, detail="Ордер нельзя отменить")
     
     order.status = OrderStatus.CANCELLED
@@ -149,7 +149,7 @@ async def get_orderbook(db: Session, ticker: str, limit: int = 10) -> L2OrderBoo
     # Получаем активные ордера
     orders = db.query(OrderModel).filter(
         OrderModel.ticker == ticker,
-        OrderModel.status == OrderStatus.NEW
+        OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED])
     ).all()
     
     # Группируем ордера по цене
@@ -160,10 +160,14 @@ async def get_orderbook(db: Session, ticker: str, limit: int = 10) -> L2OrderBoo
         if not order.price:  # Пропускаем рыночные ордера
             continue
             
+        remaining_qty = order.qty - order.filled
+        if remaining_qty <= 0:  # Пропускаем полностью исполненные ордера
+            continue
+            
         if order.direction == Direction.BUY:
-            bids[order.price] = bids.get(order.price, 0) + (order.qty - order.filled)
+            bids[order.price] = bids.get(order.price, 0) + remaining_qty
         else:
-            asks[order.price] = asks.get(order.price, 0) + (order.qty - order.filled)
+            asks[order.price] = asks.get(order.price, 0) + remaining_qty
     
     # Сортируем и ограничиваем количество уровней
     bid_levels = [
@@ -207,7 +211,7 @@ async def try_execute_order(db: Session, order: OrderModel):
     opposite_orders = db.query(OrderModel).filter(
         OrderModel.ticker == order.ticker,
         OrderModel.direction == opposite_direction,
-        OrderModel.status == OrderStatus.NEW,
+        OrderModel.status.in_([OrderStatus.NEW, OrderStatus.PARTIALLY_EXECUTED]),
         OrderModel.user_id != order.user_id  # Исключаем ордера того же пользователя
     )
     
@@ -223,6 +227,10 @@ async def try_execute_order(db: Session, order: OrderModel):
     
     remaining_qty = order.qty - order.filled
     
+    # Проверяем наличие встречных ордеров для рыночного ордера
+    if order.price is None and not opposite_orders.first():
+        raise HTTPException(status_code=400, detail="Нет встречных ордеров для исполнения")
+    
     for opposite_order in opposite_orders:
         if remaining_qty == 0:
             break
@@ -232,6 +240,8 @@ async def try_execute_order(db: Session, order: OrderModel):
         execute_price = opposite_order.price or order.price
         
         if not execute_price:
+            if order.price is None:  # Это рыночный ордер
+                raise HTTPException(status_code=400, detail="Нет встречных ордеров для исполнения")
             logger.warning(f"[ORDER] Skipping execution due to undefined price: order_id={order.id}, opposite_order_id={opposite_order.id}")
             continue
             
