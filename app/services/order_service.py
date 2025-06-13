@@ -18,11 +18,11 @@ async def get_orders(db: Session, user_id: Optional[UUID] = None) -> List[Union[
     """Получение списка ордеров"""
     logger = logging.getLogger(__name__)
     logger.info(f"Getting orders for user {user_id if user_id else 'all'}")
-
+    
     query = db.query(OrderModel)
     if user_id:
         query = query.filter(OrderModel.user_id == user_id)
-
+    
     orders = query.all()
     return [convert_order_to_schema(order) for order in orders]
 
@@ -34,10 +34,10 @@ async def create_order(
     """Создание ордера"""
     logger = logging.getLogger(__name__)
     logger.debug(f"Creating order: direction={order_data.direction}, ticker={order_data.ticker}, qty={order_data.qty}")
-
+    
     # Проверяем существование инструмента
     await instrument_service.get_instrument(db, order_data.ticker)
-
+    
     # Проверяем баланс
     if order_data.direction == Direction.SELL:
         # Для продажи проверяем баланс продаваемого инструмента
@@ -59,7 +59,7 @@ async def create_order(
             if not has_balance:
                 logger.error(f"Insufficient RUB balance for BUY order. Required: {required_amount}")
                 raise HTTPException(status_code=400, detail="Недостаточно средств в RUB")
-
+    
     # Создаем ордер
     order = OrderModel(
         user_id=user_id,
@@ -68,7 +68,7 @@ async def create_order(
         qty=order_data.qty,
         price=getattr(order_data, 'price', None)  # None для рыночных ордеров
     )
-
+    
     db.add(order)
     try:
         db.commit()
@@ -78,19 +78,19 @@ async def create_order(
         db.rollback()
         logger.error(f"Failed to create order: {str(e)}")
         raise HTTPException(status_code=400, detail="Ошибка при создании ордера")
-
+    
     # Пытаемся исполнить ордер
     await try_execute_order(db, order)
-
+    
     return CreateOrderResponse(success=True, order_id=order.id)
 
 async def cancel_order(db: Session, order_id: UUID, user_id: UUID):
     """Отмена ордера"""
     order = await get_order(db, order_id, user_id)
-
+    
     if order.status != OrderStatus.NEW:
         raise HTTPException(status_code=400, detail="Ордер нельзя отменить")
-
+    
     order.status = OrderStatus.CANCELLED
     try:
         db.commit()
@@ -98,23 +98,23 @@ async def cancel_order(db: Session, order_id: UUID, user_id: UUID):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail="Ошибка при отмене ордера")
-
+    
     return {"success": True}
 
 async def get_order(db: Session, order_id: UUID, user_id: UUID) -> Union[LimitOrder, MarketOrder]:
     """Получение ордера"""
     logger = logging.getLogger(__name__)
     logger.info(f"[ORDER] Getting order: id={order_id}, user_id={user_id}")
-
+    
     order = db.query(OrderModel).filter(OrderModel.id == order_id).first()
     if not order:
         logger.error(f"[ORDER] Order not found: id={order_id}")
         raise HTTPException(status_code=404, detail="Ордер не найден")
-
+    
     if order.user_id != user_id:
         logger.error(f"[ORDER] Access denied: order_user_id={order.user_id}, request_user_id={user_id}")
         raise HTTPException(status_code=403, detail="Нет доступа к ордеру")
-
+    
     try:
         result = convert_order_to_schema(order)
         logger.info(f"[ORDER] Successfully converted order to schema: id={order_id}, type={'limit' if order.price is not None else 'market'}")
@@ -127,12 +127,12 @@ async def get_user_orders(db: Session, user_id: UUID) -> List[Union[LimitOrder, 
     """Получение списка активных ордеров пользователя"""
     logger = logging.getLogger(__name__)
     logger.info(f"[ORDER] Getting active orders for user: {user_id}")
-
+    
     orders = db.query(OrderModel).filter(
         OrderModel.user_id == user_id,
         OrderModel.status == OrderStatus.NEW
     ).all()
-
+    
     try:
         result = [convert_order_to_schema(order) for order in orders]
         logger.info(f"[ORDER] Found {len(result)} active orders for user {user_id}")
@@ -145,37 +145,37 @@ async def get_orderbook(db: Session, ticker: str, limit: int = 10) -> L2OrderBoo
     """Получение стакана заявок"""
     # Проверяем существование инструмента
     await instrument_service.get_instrument(db, ticker)
-
+    
     # Получаем активные ордера
     orders = db.query(OrderModel).filter(
         OrderModel.ticker == ticker,
         OrderModel.status == OrderStatus.NEW
     ).all()
-
+    
     # Группируем ордера по цене
     bids: Dict[int, int] = {}  # price -> total_qty
     asks: Dict[int, int] = {}  # price -> total_qty
-
+    
     for order in orders:
         if not order.price:  # Пропускаем рыночные ордера
             continue
-
+            
         if order.direction == Direction.BUY:
             bids[order.price] = bids.get(order.price, 0) + (order.qty - order.filled)
         else:
             asks[order.price] = asks.get(order.price, 0) + (order.qty - order.filled)
-
+    
     # Сортируем и ограничиваем количество уровней
     bid_levels = [
         Level(price=price, qty=qty)
         for price, qty in sorted(bids.items(), reverse=True)[:limit]
     ]
-
+    
     ask_levels = [
         Level(price=price, qty=qty)
         for price, qty in sorted(asks.items())[:limit]
     ]
-
+    
     return L2OrderBook(bid_levels=bid_levels, ask_levels=ask_levels)
 
 async def get_transaction_history(
@@ -186,96 +186,126 @@ async def get_transaction_history(
     """Получение истории сделок"""
     # Проверяем существование инструмента
     await instrument_service.get_instrument(db, ticker)
-
+    
     return db.query(Transaction).filter(
         Transaction.ticker == ticker
     ).order_by(Transaction.timestamp.desc()).limit(limit).all()
 
 async def try_execute_order(db: Session, order: OrderModel):
-    """Попытка исполнения ордера"""
-    if order.status != OrderStatus.NEW:
-        return
+    """Попытка исполнить ордер"""
+    logger = logging.getLogger(__name__)
+    logger.info(f"[ORDER] Trying to execute order: id={order.id}, direction={order.direction}, ticker={order.ticker}, qty={order.qty}, price={order.price}")
 
-    # Находим встречные ордера
+    # Определяем направление для поиска встречных ордеров
     opposite_direction = Direction.SELL if order.direction == Direction.BUY else Direction.BUY
-
-    query = db.query(OrderModel).filter(
+    
+    # Получаем список встречных ордеров
+    opposite_orders = db.query(OrderModel).filter(
         OrderModel.ticker == order.ticker,
         OrderModel.direction == opposite_direction,
-        OrderModel.status == OrderStatus.NEW
+        OrderModel.status == OrderStatus.NEW,
+        OrderModel.user_id != order.user_id  # Исключаем ордера того же пользователя
     )
-
-    if order.price:  # Для лимитных ордеров
-        if order.direction == Direction.BUY:
-            query = query.filter(OrderModel.price <= order.price)
-        else:
-            query = query.filter(OrderModel.price >= order.price)
-
-        query = query.order_by(OrderModel.price)
-    else:  # Для рыночных ордеров
-        if order.direction == Direction.BUY:
-            query = query.order_by(OrderModel.price)
-        else:
-            query = query.order_by(OrderModel.price.desc())
-
-    opposite_orders = query.all()
-
-    # Исполняем ордер
-    remaining_qty = order.qty
+    
+    # Для лимитных ордеров добавляем условие по цене
+    if order.direction == Direction.BUY:
+        if order.price is not None:  # Для лимитных ордеров
+            opposite_orders = opposite_orders.filter(OrderModel.price <= order.price)
+        opposite_orders = opposite_orders.order_by(OrderModel.price.asc())
+    else:
+        if order.price is not None:  # Для лимитных ордеров
+            opposite_orders = opposite_orders.filter(OrderModel.price >= order.price)
+        opposite_orders = opposite_orders.order_by(OrderModel.price.desc())
+    
+    remaining_qty = order.qty - order.filled
+    
     for opposite_order in opposite_orders:
         if remaining_qty == 0:
             break
-
+            
         available_qty = opposite_order.qty - opposite_order.filled
         execute_qty = min(remaining_qty, available_qty)
         execute_price = opposite_order.price or order.price
-
+        
         if not execute_price:
+            logger.warning(f"[ORDER] Skipping execution due to undefined price: order_id={order.id}, opposite_order_id={opposite_order.id}")
             continue
-
-        # Создаем транзакцию
-        transaction = Transaction(
-            ticker=order.ticker,
-            amount=execute_qty,
-            price=execute_price,
-            buyer_id=order.user_id if order.direction == Direction.BUY else opposite_order.user_id,
-            seller_id=opposite_order.user_id if order.direction == Direction.BUY else order.user_id
-        )
-
-        # Обновляем балансы
+            
+        # Проверяем достаточность средств перед исполнением
         if order.direction == Direction.BUY:
-            await balance_service.withdraw(db, order.user_id, "RUB", execute_qty * execute_price)
-            await balance_service.deposit(db, order.user_id, order.ticker, execute_qty)
-            await balance_service.deposit(db, opposite_order.user_id, "RUB", execute_qty * execute_price)
-            await balance_service.withdraw(db, opposite_order.user_id, order.ticker, execute_qty)
+            # Проверяем RUB у покупателя и токены у продавца
+            if not await balance_service.check_balance(db, order.user_id, "RUB", execute_qty * execute_price):
+                logger.error(f"[ORDER] Insufficient RUB balance for buyer: user_id={order.user_id}, required={execute_qty * execute_price}")
+                continue
+            if not await balance_service.check_balance(db, opposite_order.user_id, order.ticker, execute_qty):
+                logger.error(f"[ORDER] Insufficient {order.ticker} balance for seller: user_id={opposite_order.user_id}, required={execute_qty}")
+                continue
         else:
-            await balance_service.deposit(db, order.user_id, "RUB", execute_qty * execute_price)
-            await balance_service.withdraw(db, order.user_id, order.ticker, execute_qty)
-            await balance_service.withdraw(db, opposite_order.user_id, "RUB", execute_qty * execute_price)
-            await balance_service.deposit(db, opposite_order.user_id, order.ticker, execute_qty)
-
-        # Обновляем ордера
-        order.filled += execute_qty
-        opposite_order.filled += execute_qty
-
-        if opposite_order.filled == opposite_order.qty:
-            opposite_order.status = OrderStatus.EXECUTED
-        else:
-            opposite_order.status = OrderStatus.PARTIALLY_EXECUTED
-
-        remaining_qty -= execute_qty
-
-        db.add(transaction)
-
+            # Проверяем токены у продавца и RUB у покупателя
+            if not await balance_service.check_balance(db, order.user_id, order.ticker, execute_qty):
+                logger.error(f"[ORDER] Insufficient {order.ticker} balance for seller: user_id={order.user_id}, required={execute_qty}")
+                continue
+            if not await balance_service.check_balance(db, opposite_order.user_id, "RUB", execute_qty * execute_price):
+                logger.error(f"[ORDER] Insufficient RUB balance for buyer: user_id={opposite_order.user_id}, required={execute_qty * execute_price}")
+                continue
+        
+        try:
+            # Создаем транзакцию
+            transaction = Transaction(
+                ticker=order.ticker,
+                amount=execute_qty,
+                price=execute_price,
+                buyer_id=order.user_id if order.direction == Direction.BUY else opposite_order.user_id,
+                seller_id=opposite_order.user_id if order.direction == Direction.BUY else order.user_id
+            )
+            
+            logger.info(f"[TRANSACTION] Creating new transaction: ticker={order.ticker}, amount={execute_qty}, price={execute_price}")
+            
+            # Обновляем балансы в правильном порядке
+            if order.direction == Direction.BUY:
+                # Сначала списываем средства
+                await balance_service.withdraw(db, order.user_id, "RUB", execute_qty * execute_price)
+                await balance_service.withdraw(db, opposite_order.user_id, order.ticker, execute_qty)
+                # Затем зачисляем
+                await balance_service.deposit(db, opposite_order.user_id, "RUB", execute_qty * execute_price)
+                await balance_service.deposit(db, order.user_id, order.ticker, execute_qty)
+            else:
+                # Сначала списываем средства
+                await balance_service.withdraw(db, opposite_order.user_id, "RUB", execute_qty * execute_price)
+                await balance_service.withdraw(db, order.user_id, order.ticker, execute_qty)
+                # Затем зачисляем
+                await balance_service.deposit(db, order.user_id, "RUB", execute_qty * execute_price)
+                await balance_service.deposit(db, opposite_order.user_id, order.ticker, execute_qty)
+            
+            # Обновляем ордера
+            order.filled += execute_qty
+            opposite_order.filled += execute_qty
+            
+            if opposite_order.filled == opposite_order.qty:
+                opposite_order.status = OrderStatus.EXECUTED
+            else:
+                opposite_order.status = OrderStatus.PARTIALLY_EXECUTED
+            
+            remaining_qty -= execute_qty
+            
+            db.add(transaction)
+            db.commit()
+            logger.info(f"[TRANSACTION] Successfully executed transaction: id={transaction.id}")
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[TRANSACTION] Failed to execute transaction: {str(e)}")
+            continue
+    
     if remaining_qty == 0:
         order.status = OrderStatus.EXECUTED
     elif order.filled > 0:
         order.status = OrderStatus.PARTIALLY_EXECUTED
-
+    
     try:
         db.commit()
+        logger.info(f"[ORDER] Successfully updated order status: id={order.id}, status={order.status}")
     except Exception as e:
         db.rollback()
-        logger = logging.getLogger(__name__)
-        logger.error(f"[ORDER] Failed to execute order: {str(e)}")
-        raise HTTPException(status_code=400, detail="Ошибка при исполнении ордера")
+        logger.error(f"[ORDER] Failed to update order status: {str(e)}")
+        raise HTTPException(status_code=400, detail="Ошибка при исполнении ордера") 
