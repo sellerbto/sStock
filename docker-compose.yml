@@ -22,8 +22,8 @@ services:
       - POSTGRES_USER=exchange
       - POSTGRES_PASSWORD=exchange
       - POSTGRES_DB=exchange
-    volumes:
-      - postgres_data2:/var/lib/postgresql/data
+    tmpfs:
+      - /var/lib/postgresql/data
     pull_policy: never
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U exchange"]
@@ -31,5 +31,5 @@ services:
       timeout: 5s
       retries: 5
 
-volumes:
-  postgres_data2:
+# volumes:
+#   postgres_data2:
