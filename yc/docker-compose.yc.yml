@@ -4,25 +4,31 @@ services:
   app:
     image: {{ env.API_IMAGE }}
     restart: always
-    command: uvicorn api.main:app --host 0.0.0.0 --port 80 --workers 8 --proxy-headers --forwarded-allow-ips="*"
+    command: >
+      sh -c "alembic upgrade head &&  uvicorn app.main:app --host 0.0.0.0 --port 80 --workers 8"
+    environment:
+    - DATABASE_URL=postgresql://exchange:exchange@db:5432/exchange
+    - SECRET_KEY=dev-secret-key
+    - ADMIN_API_KEY=key-81ce43a7-14fd-45de-9b99-82218228935a
+    - PYTHONPATH=/app
     depends_on:
       db:
         condition: service_healthy
 
   db:
-    image: postgres:16.2-bookworm
+    image: postgres:15
     restart: always
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=stock_exchange
+      - POSTGRES_USER=exchange
+      - POSTGRES_PASSWORD=exchange
+      - POSTGRES_DB=exchange
     healthcheck:
-          test: [ "CMD-SHELL", "sh -c 'pg_isready -U postgres -d stock_exchange'" ]
+          test: [ "CMD-SHELL", "pg_isready -U exchange" ]
           interval: 10s
           timeout: 3s
           retries: 3
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data3:/var/lib/postgresql/data
 
   pgadmin:
       container_name: pgadmin
@@ -71,4 +77,4 @@ services:
 
 
 volumes:
-  postgres_data:
+  postgres_data3:
