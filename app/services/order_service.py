@@ -238,7 +238,7 @@ async def try_execute_order(db: Session, order: OrderModel):
     
     remaining_qty = order.qty - order.filled
     
-    # Проверяем наличие встречных ордеров для рыночного ордера
+    # Проверяем наличие встречных ордеров только для рыночных ордеров
     if order.price is None and not opposite_orders.first():
         raise HTTPException(status_code=400, detail="Нет встречных ордеров для исполнения")
     
@@ -252,10 +252,6 @@ async def try_execute_order(db: Session, order: OrderModel):
         # Для продажи проверяем баланс токенов
         if not await balance_service.check_balance(db, order.user_id, order.ticker, remaining_qty):
             raise HTTPException(status_code=400, detail=f"Недостаточно средств в {order.ticker}")
-    
-    # Проверяем, есть ли хотя бы один ордер для исполнения
-    if not opposite_orders.first():
-        raise HTTPException(status_code=400, detail="Нет встречных ордеров для исполнения")
     
     for opposite_order in opposite_orders:
         if remaining_qty == 0:
