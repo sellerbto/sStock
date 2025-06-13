@@ -253,6 +253,10 @@ async def try_execute_order(db: Session, order: OrderModel):
         if not await balance_service.check_balance(db, order.user_id, order.ticker, remaining_qty):
             raise HTTPException(status_code=400, detail=f"Недостаточно средств в {order.ticker}")
     
+    # Проверяем, есть ли хотя бы один ордер для исполнения
+    if not opposite_orders.first():
+        raise HTTPException(status_code=400, detail="Нет встречных ордеров для исполнения")
+    
     for opposite_order in opposite_orders:
         if remaining_qty == 0:
             break
@@ -271,19 +275,15 @@ async def try_execute_order(db: Session, order: OrderModel):
         if order.direction == Direction.BUY:
             # Проверяем RUB у покупателя и токены у продавца
             if not await balance_service.check_balance(db, order.user_id, "RUB", execute_qty * execute_price):
-                logger.error(f"[ORDER] Insufficient RUB balance for buyer: user_id={order.user_id}, required={execute_qty * execute_price}")
-                continue
+                raise HTTPException(status_code=400, detail="Недостаточно средств в RUB")
             if not await balance_service.check_balance(db, opposite_order.user_id, order.ticker, execute_qty):
-                logger.error(f"[ORDER] Insufficient {order.ticker} balance for seller: user_id={opposite_order.user_id}, required={execute_qty}")
-                continue
+                raise HTTPException(status_code=400, detail=f"Недостаточно средств в {order.ticker}")
         else:
             # Проверяем токены у продавца и RUB у покупателя
             if not await balance_service.check_balance(db, order.user_id, order.ticker, execute_qty):
-                logger.error(f"[ORDER] Insufficient {order.ticker} balance for seller: user_id={order.user_id}, required={execute_qty}")
-                continue
+                raise HTTPException(status_code=400, detail=f"Недостаточно средств в {order.ticker}")
             if not await balance_service.check_balance(db, opposite_order.user_id, "RUB", execute_qty * execute_price):
-                logger.error(f"[ORDER] Insufficient RUB balance for buyer: user_id={opposite_order.user_id}, required={execute_qty * execute_price}")
-                continue
+                raise HTTPException(status_code=400, detail="Недостаточно средств в RUB")
 
         try:
             # Создаем транзакцию
