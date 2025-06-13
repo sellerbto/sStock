@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from app.api.v1 import public, user, admin
 from app.core.config import settings
@@ -25,11 +26,12 @@ async def init_base_instruments():
         rub = db.query(Instrument).filter(Instrument.ticker == "RUB").first()
         if not rub:
             logger.info("[INIT] Creating base currency RUB")
-            instrument_data = InstrumentSchema(
-                ticker="RUB",
-                name="Российский рубль"
+            # Используем прямой SQL для вставки
+            db.execute(
+                text("INSERT INTO instruments (ticker, name, is_active) VALUES (:ticker, :name, :is_active)"),
+                {"ticker": "RUB", "name": "Российский рубль", "is_active": True}
             )
-            await instrument_service.add_instrument(db, instrument_data)
+            db.commit()
             logger.info("[INIT] Base currency RUB created successfully")
         else:
             logger.info("[INIT] Base currency RUB already exists")
