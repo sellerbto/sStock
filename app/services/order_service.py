@@ -47,7 +47,7 @@ async def create_order(
         )
         if not has_balance:
             logger.error(f"Insufficient {order_data.ticker} balance for SELL order")
-            raise HTTPException(status_code=400, detail="Недостаточно средств")
+            raise HTTPException(status_code=400, detail=f"Недостаточно средств в {order_data.ticker}")
     else:
         # Для покупки проверяем баланс RUB
         if isinstance(order_data, LimitOrderBody):
@@ -101,6 +101,10 @@ async def cancel_order(db: Session, order_id: UUID, user_id: UUID):
     # Можно отменять только новые ордера
     if order.status != OrderStatus.NEW:
         raise HTTPException(status_code=400, detail="Ордер нельзя отменить")
+    
+    # Проверяем, что ордер не был исполнен
+    if order.filled > 0:
+        raise HTTPException(status_code=400, detail="Ордер нельзя отменить, так как он уже частично исполнен")
     
     order.status = OrderStatus.CANCELLED
     try:
